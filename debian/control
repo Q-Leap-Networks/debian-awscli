@@ -1,0 +1,46 @@
+Source: awscli
+Section: admin
+Priority: optional
+Maintainer: Python Applications Packaging Team <python-apps-team@lists.alioth.debian.org>
+Uploaders: TANIGUCHI Takaki <takaki@debian.org>
+Build-Depends: debhelper (>= 9)
+	, python3
+	, python3-setuptools
+Standards-Version: 3.9.5
+Homepage: http://aws.amazon.com/cli/
+Vcs-Svn: svn://anonscm.debian.org/python-apps/packages/awscli/trunk/
+Vcs-Browser: http://anonscm.debian.org/viewvc/python-apps/packages/awscli/trunk/
+X-Python3-Version: >= 3.3
+
+Package: awscli
+Architecture: all
+Depends: python3, ${python3:Depends}, ${misc:Depends}
+Description: Universal Command Line Environment for AWS
+ This package provides a unified command line interface to many
+ Amazon Web Services.
+ .
+ The currently supported services include:
+ .
+  * AWS CloudFormation
+  * AWS Data Pipeline
+  * AWS Direct Connect
+  * AWS Elastic Beanstalk
+  * AWS Identity and Access Management
+  * AWS Import/Export
+  * AWS OpsWorks
+  * AWS Security Token Service
+  * AWS Storage Gateway
+  * Amazon CloudWatch
+  * Amazon ElastiCache
+  * Amazon Elastic Compute Cloud
+  * Amazon Elastic MapReduce
+  * Amazon Elastic Transcoder
+  * Amazon Redshift
+  * Amazon Relational Database Service (Beta)
+  * Amazon Simple Email Service
+  * Amazon Simple Notification Service
+  * Amazon Simple Queue Service
+  * Amazon Simple Storage Service
+  * Amazon Simple Workflow Service
+  * Auto Scaling
+  * Elastic Load Balancing

@@ -1,0 +1,3 @@
+usr/share/awscli/aws		usr/bin/aws
+usr/share/awscli/aws_completer	usr/bin/aws_completer
+

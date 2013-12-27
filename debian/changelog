@@ -1,0 +1,5 @@
+awscli (1.2.9-1) unstable; urgency=low
+
+  * Initial release (Closes: #733211)
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Fri, 27 Dec 2013 15:08:00 +0900
