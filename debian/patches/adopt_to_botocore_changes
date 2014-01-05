@@ -1,0 +1,55 @@
+Description: Adopt to botocore changes.
+ botocore is changed to remove duplicated code. So import path have to be changed.
+ .
+ awscli (1.2.9-1) unstable; urgency=low
+ .
+   * Initial release (Closes: #733211)
+Author: TANIGUCHI Takaki <takaki@debian.org>
+Bug-Debian: http://bugs.debian.org/733211
+
+---
+The information above should follow the Patch Tagging Guidelines, please
+checkout http://dep.debian.net/deps/dep3/ to learn about the format. Here
+are templates for supplementary fields that you might want to add:
+
+Origin: <vendor|upstream|other>, <url of original patch>
+Bug: <url in upstream bugtracker>
+Bug-Debian: http://bugs.debian.org/<bugnumber>
+Bug-Ubuntu: https://launchpad.net/bugs/<bugnumber>
+Forwarded: <no|not-needed|url proving that it has been forwarded>
+Reviewed-By: <name and email of someone who approved the patch>
+Last-Update: <YYYY-MM-DD>
+
+--- awscli-1.2.9.orig/awscli/customizations/cloudtrail.py
++++ awscli-1.2.9/awscli/customizations/cloudtrail.py
+@@ -16,7 +16,7 @@ import sys
+ 
+ from awscli.customizations.commands import BasicCommand
+ from awscli.customizations.service import Service
+-from botocore.vendored import requests
++import requests
+ 
+ 
+ LOG = logging.getLogger(__name__)
+--- awscli-1.2.9.orig/awscli/customizations/s3/tasks.py
++++ awscli-1.2.9/awscli/customizations/s3/tasks.py
+@@ -4,7 +4,7 @@ import os
+ import time
+ import threading
+ 
+-from botocore.vendored import requests
++import requests
+ 
+ from awscli.customizations.s3.utils import find_bucket_key, MD5Error, \
+     operate, ReadFileChunk, relative_path
+--- awscli-1.2.9.orig/awscli/paramfile.py
++++ awscli-1.2.9/awscli/paramfile.py
+@@ -15,7 +15,7 @@
+ import logging
+ import os
+ 
+-from botocore.vendored import requests
++import requests
+ import six
+ 
+ 

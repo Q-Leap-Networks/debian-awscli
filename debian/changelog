@@ -1,3 +1,9 @@
+awscli (1.2.9-2) unstable; urgency=medium
+
+  * debian/pathces/adopt_to_botocore_changes
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Sun, 05 Jan 2014 23:04:16 +0900
+
 awscli (1.2.9-1) unstable; urgency=low
 
   * Initial release (Closes: #733211)
