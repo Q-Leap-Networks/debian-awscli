@@ -17,21 +17,35 @@ This includes how the CLI argument parser is created, how arguments
 are serialized, and how arguments are bound (if at all) to operation
 arguments.
 
+The BaseCLIArgument is the interface for all arguments.  This is the interface
+expected by objects that work with arguments.  If you want to implement your
+own argument subclass, make sure it implements everything in BaseCLIArgument.
+
+Arguments generally fall into one of several categories:
+
+* global argument.  These arguments may influence what the CLI does,
+  but aren't part of the input parameters needed to make an API call.  For
+  example, the ``--region`` argument specifies which region to send the request
+  to.  The ``--output`` argument specifies how to display the response to the
+  user.  The ``--query`` argument specifies how to select specific elements
+  from a response.
+* operation argument.  These are arguments that influence the parameters we
+  send to a service when making an API call.  Some of these arguments are
+  automatically created directly from introspecting the JSON service model.
+  Sometimes customizations may provide a pseudo-argument that takes the
+  user input and maps the input value to several API parameters.
+
 """
 import logging
 
-from botocore.hooks import first_non_none_response
 from botocore import xform_name
+from botocore.parameters import ListParameter, StructParameter
 
-from awscli.paramfile import get_paramfile, ResourceLoadingError
 from awscli.argprocess import unpack_cli_arg
+from awscli.schema import SchemaTransformer
 
 
 LOG = logging.getLogger('awscli.arguments')
-
-
-class BadArgumentError(Exception):
-    pass
 
 
 class UnknownArgumentError(Exception):
@@ -155,14 +169,18 @@ class CustomArgument(BaseCLIArgument):
     Represents a CLI argument that is configured from a dictionary.
 
     For example, the "top level" arguments used for the CLI
-    (--region, --output) can use a DictBasedArgument argument,
+    (--region, --output) can use a CustomArgument argument,
     as these are described in the cli.json file as dictionaries.
+
+    This class is also useful for plugins/customizations that want to
+    add additional args.
 
     """
 
     def __init__(self, name, help_text='', dest=None, default=None,
                  action=None, required=None, choices=None, nargs=None,
-                 cli_type_name=None, group_name=None):
+                 cli_type_name=None, group_name=None, positional_arg=False,
+                 no_paramfile=False, schema=None):
         self._name = name
         self._help = help_text
         self._dest = dest
@@ -172,14 +190,30 @@ class CustomArgument(BaseCLIArgument):
         self._nargs = nargs
         self._cli_type_name = cli_type_name
         self._group_name = group_name
+        self._positional_arg = positional_arg
         if choices is None:
             choices = []
         self._choices = choices
+        self.no_paramfile = no_paramfile
+        self._schema = schema
+
+        # If the top level element is a list then set nargs to
+        # accept multiple values seperated by a space.
+        if self._schema and self._schema.get('type', None) == 'array':
+            self._nargs = '+'
+
         # TODO: We should eliminate this altogether.
         # You should not have to depend on an argument_object
         # as part of the interface.  Currently the argprocess
         # and docs code relies on this object.
         self.argument_object = None
+
+    @property
+    def cli_name(self):
+        if self._positional_arg:
+            return self._name
+        else:
+            return '--' + self._name
 
     def add_to_parser(self, parser):
         """
@@ -203,10 +237,39 @@ class CustomArgument(BaseCLIArgument):
             kwargs['nargs'] = self._nargs
         parser.add_argument(cli_name, **kwargs)
 
+    def create_argument_object(self):
+        """
+        Create an argument object based on the JSON schema if one is set.
+        After calling this method, ``parameter.argument_object`` is available
+        e.g. for generating docs.
+        """
+        transformer = SchemaTransformer(self._schema)
+        transformed = transformer.transform()
+
+        # Set the parameter name from the parsed arg key name
+        transformed.update({'name': self.name})
+
+        LOG.debug('Custom parameter schema for {0}: {1}'.format(
+            self.name, transformed))
+
+        # Select the correct top level type
+        if transformed['type'] == 'structure':
+            self.argument_object = StructParameter(None, **transformed)
+        elif transformed['type'] == 'list':
+            self.argument_object = ListParameter(None, **transformed)
+        else:
+            raise ValueError('Invalid top level type {0}!'.format(
+                transformed['type']))
+
+    @property
     def required(self):
         if self._required is None:
             return False
         return self._required
+
+    @required.setter
+    def required(self, value):
+        self._required = value
 
     @property
     def documentation(self):
@@ -218,6 +281,8 @@ class CustomArgument(BaseCLIArgument):
             return self._cli_type_name
         elif self._action in ['store_true', 'store_false']:
             return 'boolean'
+        elif self.argument_object is not None:
+            return self.argument_object.type
         else:
             # Default to 'string' type if we don't have any
             # other info.
@@ -336,15 +401,12 @@ class CLIArgument(BaseCLIArgument):
             parameters[self.argument_object.py_name] = unpacked
 
     def _unpack_argument(self, value):
-        if not hasattr(self.argument_object, 'no_paramfile'):
-            value = self._handle_param_file(value)
         service_name = self.operation_object.service.endpoint_prefix
         operation_name = xform_name(self.operation_object.name, '-')
-        responses = self._emit('process-cli-arg.%s.%s' % (
+        override = self._emit_first_response('process-cli-arg.%s.%s' % (
             service_name, operation_name), param=self.argument_object,
             value=value,
             operation=self.operation_object)
-        override = first_non_none_response(responses)
         if override is not None:
             # A plugin supplied an alternate conversion,
             # use it instead.
@@ -353,26 +415,13 @@ class CLIArgument(BaseCLIArgument):
             # Fall back to the default arg processing.
             return unpack_cli_arg(self.argument_object, value)
 
-    def _handle_param_file(self, value):
-        session = self.operation_object.service.session
-        # If the arg is suppose to be a list type, just
-        # get the first element in the list, as it may
-        # refer to a file:// (or http/https) type.
-        potential_param_value = value
-        if isinstance(value, list) and len(value) == 1:
-            potential_param_value = value[0]
-        try:
-            actual_value = get_paramfile(session, potential_param_value)
-        except ResourceLoadingError as e:
-            raise BadArgumentError(
-                "Bad value for argument '%s': %s" % (self.cli_name, e))
-        if actual_value is not None:
-            value = actual_value
-        return value
-
     def _emit(self, name, **kwargs):
         session = self.operation_object.service.session
         return session.emit(name, **kwargs)
+
+    def _emit_first_response(self, name, **kwargs):
+        session = self.operation_object.service.session
+        return session.emit_first_non_none_response(name, **kwargs)
 
 
 class ListArgument(CLIArgument):

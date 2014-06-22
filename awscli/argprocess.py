@@ -19,6 +19,7 @@ from botocore.compat import OrderedDict, json
 
 from awscli import utils
 from awscli import SCALAR_TYPES, COMPLEX_TYPES
+from awscli.paramfile import get_paramfile, ResourceLoadingError
 
 
 LOG = logging.getLogger('awscli.argprocess')
@@ -26,10 +27,11 @@ LOG = logging.getLogger('awscli.argprocess')
 
 class ParamError(Exception):
     def __init__(self, param, message):
-        full_message = ("Error parsing parameter %s, should be: %s" %
+        full_message = ("Error parsing parameter '%s': %s" %
                         (param.cli_name, message))
         super(ParamError, self).__init__(full_message)
         self.param = param
+        self.message = message
 
 
 class ParamSyntaxError(Exception):
@@ -43,6 +45,51 @@ class ParamUnknownKeyError(Exception):
             "Unknown key '%s' for parameter %s, valid choices "
             "are: %s" % (key, param.cli_name, valid_keys))
         super(ParamUnknownKeyError, self).__init__(full_message)
+
+
+def unpack_argument(session, service_name, operation_name, param, value):
+    """
+    Unpack an argument's value from the commandline. This is part one of a two
+    step process in handling commandline arguments. Emits the load-cli-arg
+    event with service, operation, and parameter names. Example::
+
+        load-cli-arg.ec2.describe-instances.foo
+
+    """
+    param_name = getattr(param, 'name', 'anonymous')
+
+    value_override = session.emit_first_non_none_response(
+        'load-cli-arg.%s.%s.%s' % (service_name,
+                                   operation_name,
+                                   param_name),
+        param=param, value=value, service_name=service_name,
+        operation_name=operation_name)
+
+    if value_override is not None:
+        value = value_override
+
+    return value
+
+
+def uri_param(param, value, **kwargs):
+    """Handler that supports param values from URIs.
+    """
+    # Some params have a 'no_paramfile' attribute in their JSON
+    # models which means that we should not allow any uri based params
+    # for this argument.
+    if getattr(param, 'no_paramfile', False):
+        return
+    else:
+        return _check_for_uri_param(param, value)
+
+
+def _check_for_uri_param(param, value):
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    try:
+        return get_paramfile(value)
+    except ResourceLoadingError as e:
+        raise ParamError(param, six.text_type(e))
 
 
 def detect_shape_structure(param):
@@ -129,7 +176,7 @@ class ParamShorthand(object):
                 if doc_fn is None:
                     raise e
                 else:
-                    raise ParamError(param, doc_fn(param))
+                    raise ParamError(param, "should be: %s" % doc_fn(param))
             return parsed
 
     def get_parse_method_for_param(self, param, value=None):
@@ -140,11 +187,16 @@ class ParamShorthand(object):
             check_val = value[0]
         else:
             check_val = value
-        if isinstance(check_val, str) and check_val.startswith(('[', '{')):
+        if isinstance(check_val, six.string_types) and check_val.strip().startswith(
+                ('[', '{')):
             LOG.debug("Param %s looks like JSON, not considered for "
                       "param shorthand.", param.py_name)
             return
         structure = detect_shape_structure(param)
+        # If this looks like shorthand then we log the detected structure
+        # to help with debugging why the shorthand may not work, for
+        # example list-structure(list-structure(scalars))
+        LOG.debug('Detected structure: {0}'.format(structure))
         parse_method = self.SHORTHAND_SHAPES.get(structure)
         return parse_method
 
@@ -173,9 +225,10 @@ class ParamShorthand(object):
     def _list_scalar_list_parse(self, param, value):
         # Think something like ec2.DescribeInstances.Filters.
         # We're looking for key=val1,val2,val3,key2=val1,val2.
-        arg_types = {}
+        args = {}
         for arg in param.members.members:
-            arg_types[arg.name] = arg.type
+            # Arg name -> arg object lookup
+            args[arg.name] = arg
         parsed = []
         for v in value:
             parts = self._split_on_commas(v)
@@ -186,12 +239,13 @@ class ParamShorthand(object):
                 if len(current) == 2:
                     # This is a key/value pair.
                     current_key = current[0].strip()
-                    current_value = current[1].strip()
-                    if current_key not in arg_types:
+                    if current_key not in args:
                         raise ParamUnknownKeyError(param, current_key,
-                                                   arg_types.keys())
-                    elif arg_types[current_key] == 'list':
-                        current_parsed[current_key] = [current_value]
+                                                   args.keys())
+                    current_value = unpack_scalar_cli_arg(args[current_key],
+                                                          current[1].strip())
+                    if args[current_key].type == 'list':
+                        current_parsed[current_key] = current_value.split(',')
                     else:
                         current_parsed[current_key] = current_value
                 elif current_key is not None:
@@ -200,7 +254,9 @@ class ParamShorthand(object):
                     #               ^
                     #               |
                     #             val2 is associated with key1.
-                    current_parsed[current_key].append(current[0])
+                    current_value = unpack_scalar_cli_arg(args[current_key],
+                                                          current[0])
+                    current_parsed[current_key].append(current_value)
                 else:
                     raise ParamSyntaxError(part)
             parsed.append(current_parsed)
@@ -303,7 +359,7 @@ class ParamShorthand(object):
             # should be skipped for this arg.
             return None
         else:
-            self._docs_key_value_parse(param)
+            return self._docs_key_value_parse(param)
 
     def _docs_key_value_parse(self, param):
         s = '%s ' % param.cli_name
@@ -322,7 +378,7 @@ class ParamShorthand(object):
         try:
             return utils.split_on_commas(value)
         except ValueError as e:
-            raise ParamSyntaxError(str(e))
+            raise ParamSyntaxError(six.text_type(e))
 
 
 def unpack_cli_arg(parameter, value):
@@ -347,18 +403,19 @@ def unpack_cli_arg(parameter, value):
     elif parameter.type in COMPLEX_TYPES:
         return unpack_complex_cli_arg(parameter, value)
     else:
-        return str(value)
+        return six.text_type(value)
 
 
 def unpack_complex_cli_arg(parameter, value):
     if parameter.type == 'structure' or parameter.type == 'map':
         if value.lstrip()[0] == '{':
-            d = json.loads(value, object_pairs_hook=OrderedDict)
-        else:
-            msg = 'The value for parameter "%s" must be JSON or path to file.' % (
-                parameter.cli_name)
-            raise ValueError(msg)
-        return d
+            try:
+                return json.loads(value, object_pairs_hook=OrderedDict)
+            except ValueError as e:
+                raise ParamError(
+                    parameter, "Invalid JSON: %s\nJSON received: %s"
+                    % (e, value))
+        raise ParamError(parameter, "Invalid JSON:\n%s" % value)
     elif parameter.type == 'list':
         if isinstance(value, six.string_types):
             if value.lstrip()[0] == '[':
@@ -367,7 +424,14 @@ def unpack_complex_cli_arg(parameter, value):
             single_value = value[0].strip()
             if single_value and single_value[0] == '[':
                 return json.loads(value[0], object_pairs_hook=OrderedDict)
-        return [unpack_cli_arg(parameter.members, v) for v in value]
+        try:
+            return [unpack_cli_arg(parameter.members, v) for v in value]
+        except ParamError as e:
+            # The list params don't have a name/cli_name attached to them
+            # so they will have bad error messages.  We're going to
+            # attach the parent parameter to this error message to provide
+            # a more helpful error message.
+            raise ParamError(parameter, e.message)
 
 
 def unpack_scalar_cli_arg(parameter, value):
@@ -381,11 +445,11 @@ def unpack_scalar_cli_arg(parameter, value):
         file_path = os.path.expanduser(file_path)
         if not os.path.isfile(file_path):
             msg = 'Blob values must be a path to a file.'
-            raise ValueError(msg)
+            raise ParamError(parameter, msg)
         return open(file_path, 'rb')
     elif parameter.type == 'boolean':
-        if isinstance(value, str) and value.lower() == 'false':
+        if isinstance(value, six.string_types) and value.lower() == 'false':
             return False
         return bool(value)
     else:
-        return str(value)
+        return value

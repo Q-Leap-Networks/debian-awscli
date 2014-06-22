@@ -13,10 +13,12 @@
 import logging
 import sys
 import json
-import jmespath
+
+from botocore.utils import set_value_from_jmespath
 
 from awscli.table import MultiTable, Styler, ColorizedStyler
 from awscli import text
+from awscli import compat
 
 
 LOG = logging.getLogger(__name__)
@@ -38,6 +40,16 @@ class Formatter(object):
                     LOG.debug('RequestId: %s', request_id)
                 del response_data['ResponseMetadata']
 
+    def _get_default_stream(self):
+        if getattr(sys.stdout, 'encoding', None) is None:
+            # In python3, sys.stdout.encoding is always set.
+            # In python2, if you redirect to stdout, then
+            # encoding is not None.  In this case we'll default
+            # to utf-8.
+            return compat.get_stdout_text_writer()
+        else:
+            return sys.stdout
+
 
 class FullyBufferedFormatter(Formatter):
     def __call__(self, operation, response, stream=None):
@@ -45,7 +57,7 @@ class FullyBufferedFormatter(Formatter):
             # Retrieve stdout on invocation instead of at import time
             # so that if anything wraps stdout we'll pick up those changes
             # (specifically colorama on windows wraps stdout).
-            stream = sys.stdout
+            stream = self._get_default_stream()
         # I think the interfaces between non-paginated
         # and paginated responses can still be cleaned up.
         if operation.can_paginate and self._args.paginate:
@@ -55,8 +67,7 @@ class FullyBufferedFormatter(Formatter):
         try:
             self._remove_request_id(response_data)
             if self._args.query is not None:
-                expression = jmespath.compile(self._args.query)
-                response_data = expression.search(response_data)
+                response_data = self._args.query.search(response_data)
             self._format_response(operation, response_data, stream)
         finally:
             # flush is needed to avoid the "close failed in file object
@@ -206,14 +217,19 @@ class TextFormatter(Formatter):
 
     def __call__(self, operation, response, stream=None):
         if stream is None:
-            stream = sys.stdout
+            stream = self._get_default_stream()
         try:
             if operation.can_paginate and self._args.paginate:
                 result_keys = response.result_keys
                 for _, page in response:
                     current = {}
                     for result_key in result_keys:
-                        current[result_key] = page[result_key]
+                        data = result_key.search(page)
+                        set_value_from_jmespath(
+                            current,
+                            result_key.expression,
+                            data
+                        )
                     self._format_response(current, stream)
                 if response.resume_token:
                     # Tell the user about the next token so they can continue
@@ -231,7 +247,7 @@ class TextFormatter(Formatter):
 
     def _format_response(self, response, stream):
         if self._args.query is not None:
-            expression = jmespath.compile(self._args.query)
+            expression = self._args.query
             response = expression.search(response)
         text.format_text(response, stream)
 
@@ -243,4 +259,4 @@ def get_formatter(format_type, args):
         return TextFormatter(args)
     elif format_type == 'table':
         return TableFormatter(args)
-    return None
+    raise ValueError("Unknown output type: %s" % format_type)

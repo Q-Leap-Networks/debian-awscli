@@ -1,3 +1,11 @@
+awscli (1.3.18-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #744890)
+    + Fix "Unconditionally crashes at startup" (Closes: #751264)
+  * debian/patches: Refresh.
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Sun, 22 Jun 2014 23:53:46 +0900
+
 awscli (1.2.9-2) unstable; urgency=medium
 
   * debian/pathces/adopt_to_botocore_changes

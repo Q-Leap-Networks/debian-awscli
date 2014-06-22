@@ -2,6 +2,7 @@ import os
 import sys
 import time
 from functools import partial
+import errno
 import hashlib
 
 from dateutil.parser import parse
@@ -11,6 +12,10 @@ from botocore.compat import quote
 from awscli.customizations.s3.utils import find_bucket_key, \
         check_etag, check_error, operate, uni_print, \
         guess_content_type, MD5Error
+
+
+class CreateDirectoryError(Exception):
+    pass
 
 
 def read_file(filename):
@@ -34,8 +39,10 @@ def save_file(filename, response_data, last_update):
     try:
         if not os.path.exists(d):
             os.makedirs(d)
-    except Exception:
-        pass
+    except OSError as e:
+        if not e.errno == errno.EEXIST:
+            raise CreateDirectoryError(
+                "Could not create directory %s: %s" % (d, e))
     md5 = hashlib.md5()
     file_chunks = iter(partial(body.read, 1024 * 1024), b'')
     with open(filename, 'wb') as out_file:
@@ -235,7 +242,7 @@ class FileInfo(TaskInfo):
         """
         Copies a object in s3 to another location in s3.
         """
-        copy_source = quote(self.src.encode('utf-8'), safe='/~')
+        copy_source = self.src
         bucket, key = find_bucket_key(self.dest)
         params = {'endpoint': self.endpoint, 'bucket': bucket,
                   'copy_source': copy_source, 'key': key}
