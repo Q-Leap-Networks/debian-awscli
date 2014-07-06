@@ -31,6 +31,7 @@ awscli/customizations/__init__.py
 awscli/customizations/addexamples.py
 awscli/customizations/argrename.py
 awscli/customizations/cloudsearch.py
+awscli/customizations/cloudsearchdomain.py
 awscli/customizations/cloudtrail.py
 awscli/customizations/commands.py
 awscli/customizations/configure.py
