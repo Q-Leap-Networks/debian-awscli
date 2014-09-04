@@ -1,6 +1,6 @@
 Metadata-Version: 1.1
 Name: awscli
-Version: 1.3.21
+Version: 1.4.2
 Summary: Universal Command Line Environment for AWS.
 Home-page: http://aws.amazon.com/cli/
 Author: Mitch Garnaat
@@ -13,6 +13,11 @@ Description: =======
         .. image:: https://travis-ci.org/aws/aws-cli.png?branch=develop
            :target: https://travis-ci.org/aws/aws-cli
            :alt: Build Status
+        
+        
+        .. image:: https://coveralls.io/repos/aws/aws-cli/badge.png
+          :target: https://coveralls.io/r/aws/aws-cli
+        
         
         This package provides a unified command line interface to many
         Amazon Web Services.
