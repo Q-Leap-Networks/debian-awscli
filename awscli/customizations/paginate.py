@@ -26,8 +26,11 @@ For any operation that can be paginated, we will:
 import logging
 from functools import partial
 
+from botocore import xform_name
+from botocore import model
+
 from awscli.arguments import BaseCLIArgument
-from botocore.parameters import StringParameter
+
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,10 @@ MAX_ITEMS_HELP = """
 of items available is more than the value specified in
 max-items then a <code>NextToken</code> will
 be provided in the output that you can use to resume pagination.
+"""
+
+PAGE_SIZE_HELP = """
+<p>The size of each page.<p>
 """
 
 
@@ -66,22 +73,20 @@ def unify_paging_params(argument_table, operation, event_name, **kwargs):
                                                     STARTING_TOKEN_HELP,
                                                     operation,
                                                     parse_type='string')
-    # Try to get the pagination parameter type
-    limit_param = None
+    input_members = operation.model.input_shape.members
+    type_name = 'integer'
     if 'limit_key' in operation.pagination:
-        for param in operation.params:
-            if param.name == operation.pagination['limit_key']:
-                limit_param = param
-                break
-
-    type_ = limit_param and limit_param.type or 'integer'
-    if limit_param and limit_param.type not in PageArgument.type_map:
-        raise TypeError(('Unsupported pagination type {0} for operation {1}'
-                         ' and parameter {2}').format(type_, operation.name,
-                                                      limit_param.name))
+        limit_key_shape = input_members[operation.pagination['limit_key']]
+        type_name = limit_key_shape.type_name
+        if type_name not in PageArgument.type_map:
+            raise TypeError(('Unsupported pagination type {0} for operation {1}'
+                            ' and parameter {2}').format(type_name, operation.name,
+                                                         operation.pagination['limit_key']))
+        argument_table['page-size'] = PageArgument('page-size', PAGE_SIZE_HELP,
+                                                   operation, parse_type=type_name)
 
     argument_table['max-items'] = PageArgument('max-items', MAX_ITEMS_HELP,
-                                               operation, parse_type=type_)
+                                               operation, parse_type=type_name)
 
 
 def check_should_enable_pagination(input_tokens, parsed_args, parsed_globals,
@@ -108,11 +113,11 @@ def _get_all_cli_input_tokens(operation):
     # if it exists.
     tokens = _get_input_tokens(operation)
     for token_name in tokens:
-        cli_name = _get_cli_name(operation.params, token_name)
+        cli_name = xform_name(token_name, '-')
         yield cli_name
     if 'limit_key' in operation.pagination:
         key_name = operation.pagination['limit_key']
-        cli_name = _get_cli_name(operation.params, key_name)
+        cli_name = xform_name(key_name, '-')
         yield cli_name
 
 
@@ -137,12 +142,11 @@ class PageArgument(BaseCLIArgument):
     }
 
     def __init__(self, name, documentation, operation, parse_type):
-        param = StringParameter(operation, name=name, type=parse_type)
-        self._name = name
-        self.argument_object = param
+        self.argument_model = model.Shape('PageArgument', {'type': 'string'})
         self._name = name
         self._documentation = documentation
         self._parse_type = parse_type
+        self._required = False
 
     @property
     def cli_name(self):
@@ -154,7 +158,11 @@ class PageArgument(BaseCLIArgument):
 
     @property
     def required(self):
-        return False
+        return self._required
+
+    @required.setter
+    def required(self, value):
+        self._required = value
 
     @property
     def documentation(self):

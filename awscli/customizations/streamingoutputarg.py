@@ -10,17 +10,28 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+from botocore.model import Shape
+
 from awscli.arguments import BaseCLIArgument
 
 
 def add_streaming_output_arg(argument_table, operation, **kwargs):
     # Implementation detail:  hooked up to 'building-argument-table'
     # event.
-    stream_param = operation.is_streaming()
-    if stream_param:
+    model = operation.model
+    if _has_streaming_output(model):
+        streaming_argument_name = _get_streaming_argument_name(model)
         argument_table['outfile'] = StreamingOutputArgument(
-            response_key=stream_param, operation=operation,
+            response_key=streaming_argument_name, operation=operation,
             name='outfile')
+
+
+def _has_streaming_output(model):
+    return model.has_streaming_output
+
+
+def _get_streaming_argument_name(model):
+    return model.output_shape.serialization['payload']
 
 
 class StreamingOutputArgument(BaseCLIArgument):
@@ -30,7 +41,8 @@ class StreamingOutputArgument(BaseCLIArgument):
 
     def __init__(self, response_key, operation, name, buffer_size=None):
         self._name = name
-        self.argument_object = operation
+        self.argument_model = Shape('StreamingOutputArgument',
+                                    {'type': 'string'})
         if buffer_size is None:
             buffer_size = self.BUFFER_SIZE
         self._buffer_size = buffer_size
@@ -40,6 +52,7 @@ class StreamingOutputArgument(BaseCLIArgument):
         self._response_key = response_key
         self._output_file = None
         self._name = name
+        self._required = True
 
     @property
     def cli_name(self):
@@ -54,7 +67,11 @@ class StreamingOutputArgument(BaseCLIArgument):
 
     @property
     def required(self):
-        return True
+        return self._required
+
+    @required.setter
+    def required(self, value):
+        self._required = value
 
     @property
     def documentation(self):
@@ -71,7 +88,7 @@ class StreamingOutputArgument(BaseCLIArgument):
         self._operation.session.register('after-call.%s.%s' % (
             service_name, operation_name), self.save_file)
 
-    def save_file(self, http_response, parsed, **kwargs):
+    def save_file(self, parsed, **kwargs):
         body = parsed[self._response_key]
         buffer_size = self._buffer_size
         with open(self._output_file, 'wb') as fp:

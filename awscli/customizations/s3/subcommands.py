@@ -12,6 +12,7 @@
 # language governing permissions and limitations under the License.
 import os
 import six
+from six.moves import queue
 import sys
 
 from dateutil.parser import parse
@@ -22,11 +23,14 @@ from awscli.customizations.s3.comparator import Comparator
 from awscli.customizations.s3.fileinfobuilder import FileInfoBuilder
 from awscli.customizations.s3.fileformat import FileFormat
 from awscli.customizations.s3.filegenerator import FileGenerator
-from awscli.customizations.s3.fileinfo import TaskInfo
+from awscli.customizations.s3.fileinfo import TaskInfo, FileInfo
 from awscli.customizations.s3.filters import create_filter
-from awscli.customizations.s3.s3handler import S3Handler
+from awscli.customizations.s3.s3handler import S3Handler, S3StreamHandler
 from awscli.customizations.s3.utils import find_bucket_key, uni_print, \
-    AppendFilter
+    AppendFilter, find_dest_path_comp_key
+from awscli.customizations.s3.syncstrategy.base import MissingFileSync, \
+    SizeAndLastModifiedSync, NeverSync
+
 
 
 RECURSIVE = {'name': 'recursive', 'action': 'store_true', 'dest': 'dir_op',
@@ -38,11 +42,6 @@ DRYRUN = {'name': 'dryrun', 'action': 'store_true',
           'help_text': (
               "Displays the operations that would be performed using the "
               "specified command without actually running them.")}
-
-DELETE = {'name': 'delete', 'action': 'store_true',
-          'help_text': (
-              "Files that exist in the destination but not in the source are "
-              "deleted during sync.")}
 
 QUIET = {'name': 'quiet', 'action': 'store_true',
          'help_text': (
@@ -177,19 +176,6 @@ SOURCE_REGION = {'name': 'source-region', 'nargs': 1,
 EXPIRES = {'name': 'expires', 'nargs': 1, 'help_text': ("The date and time at "
            "which the object is no longer cacheable.")}
 
-SIZE_ONLY = {'name': 'size-only', 'action': 'store_true',
-             'help_text': (
-                 'Makes the size of each key the only criteria used to '
-                 'decide whether to sync from source to destination.')}
-
-EXACT_TIMESTAMPS = {'name': 'exact-timestamps', 'action': 'store_true',
-                    'help_text': (
-                        'When syncing from S3 to local, same-sized '
-                        'items will be ignored only when the timestamps '
-                        'match exactly. The default behavior is to ignore '
-                        'same-sized items unless the local version is newer '
-                        'than the S3 version.')}
-
 INDEX_DOCUMENT = {'name': 'index-document',
                   'help_text': (
                       'A suffix that is appended to a request that is for '
@@ -205,13 +191,31 @@ ERROR_DOCUMENT = {'name': 'error-document',
                       'The object key name to use when '
                       'a 4XX class error occurs.')}
 
+ONLY_SHOW_ERRORS = {'name': 'only-show-errors', 'action': 'store_true',
+                    'help_text': (
+                        'Only errors and warnings are displayed. All other '
+                        'output is suppressed.')}
+
+EXPECTED_SIZE = {'name': 'expected-size',
+                 'help_text': (
+                     'This argument specifies the expected size of a stream '
+                     'in terms of bytes. Note that this argument is needed '
+                     'only when a stream is being uploaded to s3 and the size '
+                     'is larger than 5GB.  Failure to include this argument '
+                     'under these conditions may result in a failed upload. '
+                     'due to too many parts in upload.')}
+
+
+PAGE_SIZE = {'name': 'page-size', 'help_text': 'The size of each page.',
+             'cli_type_name': 'integer'}
+
+
 TRANSFER_ARGS = [DRYRUN, QUIET, RECURSIVE, INCLUDE, EXCLUDE, ACL,
                  FOLLOW_SYMLINKS, NO_FOLLOW_SYMLINKS, NO_GUESS_MIME_TYPE,
                  SSE, STORAGE_CLASS, GRANTS, WEBSITE_REDIRECT, CONTENT_TYPE,
                  CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_ENCODING,
-                 CONTENT_LANGUAGE, EXPIRES, SOURCE_REGION]
-
-SYNC_ARGS = [DELETE, EXACT_TIMESTAMPS, SIZE_ONLY] + TRANSFER_ARGS
+                 CONTENT_LANGUAGE, EXPIRES, SOURCE_REGION, ONLY_SHOW_ERRORS,
+                 PAGE_SIZE]
 
 
 def get_endpoint(service, region, endpoint_url, verify):
@@ -234,7 +238,8 @@ class ListCommand(S3Command):
                    "is ignored for this command.")
     USAGE = "<S3Path> or NONE"
     ARG_TABLE = [{'name': 'paths', 'nargs': '?', 'default': 's3://',
-                  'positional_arg': True, 'synopsis': USAGE}, RECURSIVE]
+                  'positional_arg': True, 'synopsis': USAGE}, RECURSIVE,
+                 PAGE_SIZE]
     EXAMPLES = BasicCommand.FROM_FILE('s3/ls.rst')
 
     def _run_main(self, parsed_args, parsed_globals):
@@ -247,29 +252,30 @@ class ListCommand(S3Command):
             self._list_all_buckets()
         elif parsed_args.dir_op:
             # Then --recursive was specified.
-            self._list_all_objects_recursive(bucket, key)
+            self._list_all_objects_recursive(bucket, key,
+                                             parsed_args.page_size)
         else:
-            self._list_all_objects(bucket, key)
+            self._list_all_objects(bucket, key, parsed_args.page_size)
         return 0
 
-    def _list_all_objects(self, bucket, key):
+    def _list_all_objects(self, bucket, key, page_size=None):
 
         operation = self.service.get_operation('ListObjects')
         iterator = operation.paginate(self.endpoint, bucket=bucket,
-                                      prefix=key, delimiter='/')
+                                      prefix=key, delimiter='/',
+                                      page_size=page_size)
         for _, response_data in iterator:
             self._display_page(response_data)
 
     def _display_page(self, response_data, use_basename=True):
-        common_prefixes = response_data['CommonPrefixes']
-        contents = response_data['Contents']
+        common_prefixes = response_data.get('CommonPrefixes', [])
+        contents = response_data.get('Contents', [])
         for common_prefix in common_prefixes:
             prefix_components = common_prefix['Prefix'].split('/')
             prefix = prefix_components[-2]
             pre_string = "PRE".rjust(30, " ")
             print_str = pre_string + ' ' + prefix + '/\n'
             uni_print(print_str)
-            sys.stdout.flush()
         for content in contents:
             last_mod_str = self._make_last_mod_str(content['LastModified'])
             size_str = self._make_size_str(content['Size'])
@@ -281,7 +287,6 @@ class ListCommand(S3Command):
             print_str = last_mod_str + ' ' + size_str + ' ' + \
                 filename + '\n'
             uni_print(print_str)
-            sys.stdout.flush()
 
     def _list_all_buckets(self):
         operation = self.service.get_operation('ListBuckets')
@@ -291,12 +296,11 @@ class ListCommand(S3Command):
             last_mod_str = self._make_last_mod_str(bucket['CreationDate'])
             print_str = last_mod_str + ' ' + bucket['Name'] + '\n'
             uni_print(print_str)
-            sys.stdout.flush()
 
-    def _list_all_objects_recursive(self, bucket, key):
+    def _list_all_objects_recursive(self, bucket, key, page_size=None):
         operation = self.service.get_operation('ListObjects')
         iterator = operation.paginate(self.endpoint, bucket=bucket,
-                                      prefix=key)
+                                      prefix=key, page_size=page_size)
         for _, response_data in iterator:
             self._display_page(response_data, use_basename=False)
 
@@ -324,8 +328,9 @@ class ListCommand(S3Command):
 
 
 class WebsiteCommand(S3Command):
+    NAME = 'website'
     DESCRIPTION = 'Set the website configuration for a bucket.'
-    USAGE = 's3://bucket [--index-document|--error-document] value'
+    USAGE = '<S3Path>'
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}, INDEX_DOCUMENT, ERROR_DOCUMENT]
 
@@ -372,6 +377,7 @@ class S3TransferCommand(S3Command):
         cmd_params.add_region(parsed_globals)
         cmd_params.add_endpoint_url(parsed_globals)
         cmd_params.add_verify_ssl(parsed_globals)
+        cmd_params.add_page_size(parsed_args)
         cmd_params.add_paths(parsed_args.paths)
         cmd_params.check_force(parsed_globals)
         cmd = CommandArchitecture(self._session, self.NAME,
@@ -408,7 +414,7 @@ class CpCommand(S3TransferCommand):
     USAGE = "<LocalPath> <S3Path> or <S3Path> <LocalPath> " \
             "or <S3Path> <S3Path>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
-                  'synopsis': USAGE}] + TRANSFER_ARGS
+                  'synopsis': USAGE}] + TRANSFER_ARGS + [EXPECTED_SIZE]
     EXAMPLES = BasicCommand.FROM_FILE('s3/cp.rst')
 
 
@@ -429,7 +435,7 @@ class RmCommand(S3TransferCommand):
     USAGE = "<S3Path>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}, DRYRUN, QUIET, RECURSIVE, INCLUDE,
-                 EXCLUDE]
+                 EXCLUDE, ONLY_SHOW_ERRORS, PAGE_SIZE]
     EXAMPLES = BasicCommand.FROM_FILE('s3/rm.rst')
 
 
@@ -439,7 +445,7 @@ class SyncCommand(S3TransferCommand):
     USAGE = "<LocalPath> <S3Path> or <S3Path> " \
             "<LocalPath> or <S3Path> <S3Path>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
-                  'synopsis': USAGE}] + SYNC_ARGS
+                  'synopsis': USAGE}] + TRANSFER_ARGS
     EXAMPLES = BasicCommand.FROM_FILE('s3/sync.rst')
 
 
@@ -505,15 +511,47 @@ class CommandArchitecture(object):
         instruction list because it sends the request to S3 and does not
         yield anything.
         """
-        if self.cmd not in ['mb', 'rb']:
+        if self.needs_filegenerator():
             self.instructions.append('file_generator')
-        if self.parameters.get('filters'):
-            self.instructions.append('filters')
-        if self.cmd == 'sync':
-            self.instructions.append('comparator')
-        if self.cmd not in ['mb', 'rb']:
+            if self.parameters.get('filters'):
+                self.instructions.append('filters')
+            if self.cmd == 'sync':
+                self.instructions.append('comparator')
             self.instructions.append('file_info_builder')
         self.instructions.append('s3_handler')
+
+    def needs_filegenerator(self):
+        if self.cmd in ['mb', 'rb'] or self.parameters['is_stream']:
+            return False
+        else:
+            return True
+    
+    def choose_sync_strategies(self):
+        """Determines the sync strategy for the command.
+
+        It defaults to the default sync strategies but a customizable sync
+        strategy can overide the default strategy if it returns the instance
+        of its self when the event is emitted.
+        """
+        sync_strategies = {}
+        # Set the default strategies.
+        sync_strategies['file_at_src_and_dest_sync_strategy'] = \
+            SizeAndLastModifiedSync()
+        sync_strategies['file_not_at_dest_sync_strategy'] = MissingFileSync()
+        sync_strategies['file_not_at_src_sync_strategy'] = NeverSync()
+
+        # Determine what strategies to overide if any.
+        responses = self.session.emit(
+            'choosing-s3-sync-strategy', params=self.parameters)
+        if responses is not None:
+            for response in responses:
+                override_sync_strategy = response[1]
+                if override_sync_strategy is not None:
+                    sync_type = override_sync_strategy.sync_type
+                    sync_type += '_sync_strategy'
+                    sync_strategies[sync_type] = override_sync_strategy
+
+        return sync_strategies
 
     def run(self):
         """
@@ -554,21 +592,41 @@ class CommandArchitecture(object):
             'mb': 'make_bucket',
             'rb': 'remove_bucket'
         }
+        result_queue = queue.Queue()
         operation_name = cmd_translation[paths_type][self.cmd]
         file_generator = FileGenerator(self._service,
                                        self._source_endpoint,
                                        operation_name,
-                                       self.parameters['follow_symlinks'])
+                                       self.parameters['follow_symlinks'],
+                                       self.parameters['page_size'],
+                                       result_queue=result_queue)
         rev_generator = FileGenerator(self._service, self._endpoint, '',
-                                      self.parameters['follow_symlinks'])
+                                      self.parameters['follow_symlinks'],
+                                      self.parameters['page_size'],
+                                      result_queue=result_queue)
         taskinfo = [TaskInfo(src=files['src']['path'],
                              src_type='s3',
                              operation_name=operation_name,
                              service=self._service,
                              endpoint=self._endpoint)]
+        stream_dest_path, stream_compare_key = find_dest_path_comp_key(files)
+        stream_file_info = [FileInfo(src=files['src']['path'],
+                                     dest=stream_dest_path,
+                                     compare_key=stream_compare_key,
+                                     src_type=files['src']['type'],
+                                     dest_type=files['dest']['type'],
+                                     operation_name=operation_name,
+                                     service=self._service,
+                                     endpoint=self._endpoint,
+                                     is_stream=True)]
         file_info_builder = FileInfoBuilder(self._service, self._endpoint,
                                  self._source_endpoint, self.parameters) 
-        s3handler = S3Handler(self.session, self.parameters)
+        s3handler = S3Handler(self.session, self.parameters,
+                              result_queue=result_queue)
+        s3_stream_handler = S3StreamHandler(self.session, self.parameters,
+                                            result_queue=result_queue)
+
+        sync_strategies = self.choose_sync_strategies()
 
         command_dict = {}
         if self.cmd == 'sync':
@@ -577,9 +635,12 @@ class CommandArchitecture(object):
                                                rev_generator],
                             'filters': [create_filter(self.parameters),
                                         create_filter(self.parameters)],
-                            'comparator': [Comparator(self.parameters)],
+                            'comparator': [Comparator(**sync_strategies)],
                             'file_info_builder': [file_info_builder],
                             's3_handler': [s3handler]}
+        elif self.cmd == 'cp' and self.parameters['is_stream']:
+            command_dict = {'setup': [stream_file_info],
+                             's3_handler': [s3_stream_handler]}
         elif self.cmd == 'cp':
             command_dict = {'setup': [files],
                             'file_generator': [file_generator],
@@ -620,13 +681,17 @@ class CommandArchitecture(object):
         # will replaces the files attr with the return value of the
         # file_list.  The very last call is a single list of
         # [s3_handler], and the s3_handler returns the number of
-        # tasks failed.  This means that files[0] now contains
-        # the number of failed tasks.  In terms of the RC, we're
-        # keeping it simple and saying that > 0 failed tasks
-        # will give a 1 RC.
+        # tasks failed and the number of tasks warned.
+        # This means that files[0] now contains a namedtuple with
+        # the number of failed tasks and the number of warned tasks.
+        # In terms of the RC, we're keeping it simple and saying 
+        # that > 0 failed tasks will give a 1 RC and > 0 warned
+        # tasks will give a 2 RC.  Otherwise a RC of zero is returned.
         rc = 0
-        if files[0] > 0:
+        if files[0].num_tasks_failed > 0:
             rc = 1
+        if files[0].num_tasks_warned > 0:
+            rc = 2
         return rc
 
 
@@ -668,7 +733,18 @@ class CommandParameters(object):
             self.parameters['dest'] = paths[1]
         elif len(paths) == 1:
             self.parameters['dest'] = paths[0]
+        self._validate_streaming_paths()
         self._validate_path_args()
+
+    def _validate_streaming_paths(self):
+        self.parameters['is_stream'] = False
+        if self.parameters['src'] == '-' or self.parameters['dest'] == '-':
+            self.parameters['is_stream'] = True
+            self.parameters['dir_op'] = False
+            self.parameters['only_show_errors'] = True
+        if self.parameters['is_stream'] and self.cmd != 'cp':
+            raise ValueError("Streaming currently is only compatible with "
+                             "single file cp commands")
 
     def _validate_path_args(self):
         # If we're using a mv command, you can't copy the object onto itself.
@@ -787,3 +863,6 @@ class CommandParameters(object):
 
     def add_verify_ssl(self, parsed_globals):
         self.parameters['verify_ssl'] = parsed_globals.verify_ssl
+
+    def add_page_size(self, parsed_args):
+        self.parameters['page_size'] = getattr(parsed_args, 'page_size', None)

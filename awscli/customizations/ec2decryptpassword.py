@@ -16,10 +16,13 @@ import base64
 import rsa
 import six
 
+from botocore import model
+
 from awscli.arguments import BaseCLIArgument
-from botocore.parameters import StringParameter
+
 
 logger = logging.getLogger(__name__)
+
 
 HELP = """<p>The file that contains the private key used to launch
 the instance (e.g. windows-keypair.pem).  If this is supplied, the
@@ -38,14 +41,11 @@ def ec2_add_priv_launch_key(argument_table, operation, **kwargs):
 class LaunchKeyArgument(BaseCLIArgument):
 
     def __init__(self, operation, name):
-        param = StringParameter(operation,
-                                name=name,
-                                type='string')
-        self._name = name
-        self.argument_object = param
+        self.argument_model = model.Shape('LaunchKeyArgument', {'type': 'string'})
         self._operation = operation
         self._name = name
         self._key_path = None
+        self._required = False
 
     @property
     def cli_type_name(self):
@@ -53,7 +53,11 @@ class LaunchKeyArgument(BaseCLIArgument):
 
     @property
     def required(self):
-        return False
+        return self._required
+
+    @required.setter
+    def required(self, value):
+        self._required = value
 
     @property
     def documentation(self):
@@ -86,14 +90,13 @@ class LaunchKeyArgument(BaseCLIArgument):
                        'the instance.')
                 raise ValueError(msg)
 
-    def _decrypt_password_data(self, http_response, parsed, **kwargs):
+    def _decrypt_password_data(self, parsed, **kwargs):
         """
-        This handler gets called after the GetPasswordData command has
-        been executed.  It is called with the ``http_response`` and
-        the ``parsed`` data.  It checks to see if a private launch
-        key was specified on the command.  If it was, it tries to use
-        that private key to decrypt the password data and replace it
-        in the returned data dictionary.
+        This handler gets called after the GetPasswordData command has been
+        executed.  It is called with the and the ``parsed`` data.  It checks to
+        see if a private launch key was specified on the command.  If it was,
+        it tries to use that private key to decrypt the password data and
+        replace it in the returned data dictionary.
         """
         if self._key_path is not None:
             logger.debug("Decrypting password data using: %s", self._key_path)
