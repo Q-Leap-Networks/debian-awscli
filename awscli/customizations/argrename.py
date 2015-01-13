@@ -31,10 +31,14 @@ ARGUMENT_RENAMES = {
     'swf.register-activity-type.version': 'activity-version',
     'swf.register-workflow-type.version': 'workflow-version',
     'datapipeline.*.query': 'objects-query',
+    'datapipeline.get-pipeline-definition.version': 'pipeline-version',
     'emr.*.job-flow-ids': 'cluster-ids',
     'emr.*.job-flow-id': 'cluster-id',
     'cloudsearchdomain.search.query': 'search-query',
+    'cloudsearchdomain.suggest.query': 'suggest-query',
     'sns.subscribe.endpoint': 'notification-endpoint',
+    'deploy.*.s-3-location': 's3-location',
+    'deploy.*.ec-2-tag-filters': 'ec2-tag-filters',
 }
 
 

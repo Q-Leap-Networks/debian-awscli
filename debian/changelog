@@ -1,3 +1,9 @@
+awscli (1.7.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Tue, 13 Jan 2015 23:09:28 +0900
+
 awscli (1.5.5-1) unstable; urgency=medium
 
   * New upstream release

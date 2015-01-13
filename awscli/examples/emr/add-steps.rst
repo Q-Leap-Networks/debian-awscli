@@ -25,7 +25,68 @@
 
 - Command::
 
-    aws emr add-steps --cluster-id j-XXXXXXXX --steps Type=STREAMING,Name='Streaming Program',ActionOnFailure=CONTINUE,Args=-mapper,mymapper,-reducer,myreducer,-input,myinput,-output,myoutput Type=STREAMING,Name='Streaming Program',ActionOnFailure=CONTINUE,Args=--files,s3://elasticmapreduce/samples/wordcount/wordSplitter.py,-mapper,wordSplitter.py,-reducer,aggregate,-input,s3://elasticmapreduce/samples/wordcount/input,-output,s3://mybucket/wordcount/output
+    aws emr add-steps --cluster-id j-XXXXXXXX --steps Type=STREAMING,Name='Streaming Program',ActionOnFailure=CONTINUE,Args=[-files,s3://elasticmapreduce/samples/wordcount/wordSplitter.py,-mapper,wordSplitter.py,-reducer,aggregate,-input,s3://elasticmapreduce/samples/wordcount/input,-output,s3://mybucket/wordcount/output]
+
+- Required parameters::
+
+    Type, Args
+
+- Optional parameters::
+
+    Name, ActionOnFailure
+
+- JSON equivalent (contents of step.json)::
+
+    [
+     {
+       "Name": "JSON Streaming Step",
+       "Args": ["-files","s3://elasticmapreduce/samples/wordcount/wordSplitter.py","-mapper","wordSplitter.py","-reducer","aggregate","-input","s3://elasticmapreduce/samples/wordcount/input","-output","s3://mybucket/wordcount/output"],
+       "ActionOnFailure": "CONTINUE",
+       "Type": "STREAMING"
+     }
+   ]
+
+NOTE: JSON arguments must include options and values as their own items in the list. 
+
+- Command (using step.json)::
+
+    aws emr add-steps --cluster-id j-XXXXXXXX --steps file://./step.json
+
+- Output::
+
+    {
+        "StepIds":[
+            "s-XXXXXXXX",
+            "s-YYYYYYYY"
+        ]
+    }
+
+**3. To add a Streaming step with multiple files to a cluster (JSON only)**
+
+- JSON (multiplefiles.json)::
+
+   [
+     {
+        "Name": "JSON Streaming Step",
+        "Type": "STREAMING",
+        "ActionOnFailure": "CONTINUE",
+        "Args": [
+            "-files",
+            "s3://mybucket/mapper.py,s3://mybucket/reducer.py",
+            "-mapper",
+            "mapper.py",
+            "-reducer",
+            "reducer.py",
+            "-input",
+            "s3://mybucket/input",
+            "-output",
+            "s3://mybucket/output"]
+     }
+   ]
+
+- Command::
+
+    aws emr add-steps --cluster-id j-XXXXXXXX  --steps file://./multiplefiles.json
 
 - Required parameters::
 
@@ -40,12 +101,11 @@
     {
         "StepIds":[
             "s-XXXXXXXX",
-            "s-YYYYYYYY"
         ]
     }
 
 
-**3. To add Hive steps to a cluster**
+**4. To add Hive steps to a cluster**
 
 - Command::
 
@@ -70,7 +130,7 @@
     }
 
 
-**4. To add Pig steps to a cluster**
+**5. To add Pig steps to a cluster**
 
 - Command::
 
@@ -95,7 +155,7 @@
     }
 
 
-**5. To add Impala steps to a cluster**
+**6. To add Impala steps to a cluster**
 
 - Command::
 

@@ -17,8 +17,7 @@ authorize operations:
 * --protocol: tcp | udp | icmp or any protocol number
 * --port:  A single integer or a range (min-max). You can specify ``all``
   to mean all ports (for example, port range 0-65535)
-* --source-group-name
-* --source-group-id
+* --source-group: Either the source security group ID or name.
 * --cidr -  The CIDR range. Cannot be used when specifying a source or
   destination security group.
 """
@@ -30,16 +29,29 @@ def _add_params(argument_table, operation, **kwargs):
     arg = ProtocolArgument('protocol',
                            help_text=PROTOCOL_DOCS)
     argument_table['protocol'] = arg
+    argument_table['ip-protocol']._UNDOCUMENTED = True
+
     arg = PortArgument('port', help_text=PORT_DOCS)
     argument_table['port'] = arg
+    # Port handles both the from-port and to-port,
+    # we need to not document both args.
+    argument_table['from-port']._UNDOCUMENTED = True
+    argument_table['to-port']._UNDOCUMENTED = True
+
     arg = CidrArgument('cidr', help_text=CIDR_DOCS)
     argument_table['cidr'] = arg
+    argument_table['cidr-ip']._UNDOCUMENTED = True
+
+
     arg = SourceGroupArgument('source-group',
                               help_text=SOURCEGROUP_DOCS)
     argument_table['source-group'] = arg
+    argument_table['source-security-group-name']._UNDOCUMENTED = True
+
     arg = GroupOwnerArgument('group-owner',
                              help_text=GROUPOWNER_DOCS)
     argument_table['group-owner'] = arg
+    argument_table['source-security-group-owner-id']._UNDOCUMENTED = True
 
 
 def _check_args(parsed_args, **kwargs):
@@ -83,10 +95,11 @@ PROTOCOL_DOCS = ('<p>The IP protocol of this permission.</p>'
                  '<p>Valid protocol values: <code>tcp</code>, '
                  '<code>udp</code>, <code>icmp</code></p>')
 PORT_DOCS = ('<p>For TCP or UDP: The range of ports to allow.'
-             '  A single integer or a range (min-max). You can '
-             'specify <code>all</code> to mean all ports</p>')
+             '  A single integer or a range (min-max). A value of '
+             '<code>-1</code> indicates all ICMP codes for the '
+             'specified ICMP type.</p>')
 CIDR_DOCS = '<p>The CIDR IP range.</p>'
-SOURCEGROUP_DOCS = ('<p>The name of the source security group. '
+SOURCEGROUP_DOCS = ('<p>The name or ID of the source security group. '
                     'Cannot be used when specifying a CIDR IP address.')
 GROUPOWNER_DOCS = ('<p>The AWS account ID that owns the source security '
                    'group. Cannot be used when specifying a CIDR IP '
