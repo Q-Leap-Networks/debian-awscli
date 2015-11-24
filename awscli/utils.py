@@ -11,7 +11,9 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import csv
+import signal
 import datetime
+import contextlib
 
 from awscli.compat import six
 
@@ -85,7 +87,7 @@ def _eat_items(value, iter_parts, part, end_char, replace_char=''):
         except StopIteration:
             raise ValueError(value)
         chunks.append(current.replace(replace_char, ''))
-        if end_char in current:
+        if current.endswith(end_char):
             break
     return ','.join(chunks)
 
@@ -115,3 +117,10 @@ def json_encoder(obj):
         return obj
 
 
+@contextlib.contextmanager
+def ignore_ctrl_c():
+    original = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, original)

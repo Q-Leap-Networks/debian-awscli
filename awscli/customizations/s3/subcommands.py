@@ -13,6 +13,7 @@
 import os
 import sys
 
+from botocore.client import Config
 from dateutil.parser import parse
 from dateutil.tz import tzlocal
 
@@ -27,10 +28,11 @@ from awscli.customizations.s3.fileinfo import TaskInfo, FileInfo
 from awscli.customizations.s3.filters import create_filter
 from awscli.customizations.s3.s3handler import S3Handler, S3StreamHandler
 from awscli.customizations.s3.utils import find_bucket_key, uni_print, \
-    AppendFilter, find_dest_path_comp_key
+    AppendFilter, find_dest_path_comp_key, human_readable_size, \
+    RequestParamsMapper
 from awscli.customizations.s3.syncstrategy.base import MissingFileSync, \
     SizeAndLastModifiedSync, NeverSync
-
+from awscli.customizations.s3 import transferconfig
 
 
 RECURSIVE = {'name': 'recursive', 'action': 'store_true', 'dest': 'dir_op',
@@ -38,19 +40,38 @@ RECURSIVE = {'name': 'recursive', 'action': 'store_true', 'dest': 'dir_op',
                  "Command is performed on all files or objects "
                  "under the specified directory or prefix.")}
 
+
+HUMAN_READABLE = {'name': 'human-readable', 'action': 'store_true',
+                  'help_text': "Displays file sizes in human readable format."}
+
+
+SUMMARIZE = {'name': 'summarize', 'action': 'store_true',
+             'help_text': (
+                 "Displays summary information "
+                 "(number of objects, total size).")}
+
+
 DRYRUN = {'name': 'dryrun', 'action': 'store_true',
           'help_text': (
               "Displays the operations that would be performed using the "
               "specified command without actually running them.")}
+
 
 QUIET = {'name': 'quiet', 'action': 'store_true',
          'help_text': (
              "Does not display the operations performed from the specified "
              "command.")}
 
+
 FORCE = {'name': 'force', 'action': 'store_true',
          'help_text': (
-             "Deletes all objects in the bucket including the bucket itself.")}
+             "Deletes all objects in the bucket including the bucket itself. "
+             "Note that versioned objects will not be deleted in this "
+             "process which would cause the bucket deletion to fail because "
+             "the bucket would not be empty. To delete versioned "
+             "objects use the ``s3api delete-object`` command with "
+             "the ``--version-id`` parameter.")}
+
 
 FOLLOW_SYMLINKS = {'name': 'follow-symlinks', 'action': 'store_true',
                    'default': True, 'group_name': 'follow_symlinks',
@@ -63,9 +84,11 @@ FOLLOW_SYMLINKS = {'name': 'follow-symlinks', 'action': 'store_true',
                        "nor ``--no-follow-symlinks`` is specifed, the default "
                        "is to follow symlinks.")}
 
+
 NO_FOLLOW_SYMLINKS = {'name': 'no-follow-symlinks', 'action': 'store_false',
                       'dest': 'follow_symlinks', 'default': True,
                       'group_name': 'follow_symlinks'}
+
 
 NO_GUESS_MIME_TYPE = {'name': 'no-guess-mime-type', 'action': 'store_false',
                       'dest': 'guess_mime_type', 'default': True,
@@ -74,10 +97,12 @@ NO_GUESS_MIME_TYPE = {'name': 'no-guess-mime-type', 'action': 'store_false',
                           "uploaded files.  By default the mime type of a "
                           "file is guessed when it is uploaded.")}
 
-CONTENT_TYPE = {'name': 'content-type', 'nargs': 1,
+
+CONTENT_TYPE = {'name': 'content-type',
                 'help_text': (
                     "Specify an explicit content type for this operation.  "
                     "This value overrides any guessed mime types.")}
+
 
 EXCLUDE = {'name': 'exclude', 'action': AppendFilter, 'nargs': 1,
            'dest': 'filters',
@@ -85,57 +110,144 @@ EXCLUDE = {'name': 'exclude', 'action': AppendFilter, 'nargs': 1,
                "Exclude all files or objects from the command that matches "
                "the specified pattern.")}
 
+
 INCLUDE = {'name': 'include', 'action': AppendFilter, 'nargs': 1,
            'dest': 'filters',
            'help_text': (
                "Don't exclude files or objects "
                "in the command that match the specified pattern")}
 
-ACL = {'name': 'acl', 'nargs': 1,
+
+ACL = {'name': 'acl',
        'choices': ['private', 'public-read', 'public-read-write',
                    'authenticated-read', 'bucket-owner-read',
                    'bucket-owner-full-control', 'log-delivery-write'],
        'help_text': (
            "Sets the ACL for the object when the command is "
-           "performed.  Only accepts values of ``private``, ``public-read``, "
+           "performed.  If you use this parameter you must have the "
+           '"s3:PutObjectAcl" permission included in the list of actions '
+           "for your IAM policy. "
+           "Only accepts values of ``private``, ``public-read``, "
            "``public-read-write``, ``authenticated-read``, "
            "``bucket-owner-read``, ``bucket-owner-full-control`` and "
-           "``log-delivery-write``.")}
+           "``log-delivery-write``. "
+           'See <a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/'
+           'acl-overview.html#canned-acl">Canned ACL</a> for details')}
 
-GRANTS = {'name': 'grants', 'nargs': '+',
-          'help_text': (
-              "Grant specific permissions to individual users or groups. You "
-              "can supply a list of grants of the form::<p/>  --grants "
-              "Permission=Grantee_Type=Grantee_ID [Permission=Grantee_Type="
-              "Grantee_ID ...]<p/>Each value contains the following elements:"
-              "<p/><ul><li><code>Permission</code> - Specifies "
-              "the granted permissions, and can be set to read, readacl, "
-              "writeacl, or full.</li><li><code>Grantee_Type</code> - "
-              "Specifies how the grantee is to be identified, and can be set "
-              "to uri, emailaddress, or id.</li><li><code>Grantee_ID</code> - "
-              "Specifies the grantee based on Grantee_Type.</li></ul>The "
-              "<code>Grantee_ID</code> value can be one of:<ul><li><b>uri</b> "
-              "- The group's URI. For more information, see "
-              '<a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/ACLOverview.html#SpecifyingGrantee">'
-              "Who Is a Grantee?</a></li>"
-              "<li><b>emailaddress</b> - The account's email address.</li>"
-              "<li><b>id</b> - The account's canonical ID</li></ul>"
-              "</li></ul>"
-              "For more information on Amazon S3 access control, see "
-              '<a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/UsingAuthAccess.html">Access Control</a>')}
 
-SSE = {'name': 'sse', 'action': 'store_true',
-       'help_text': (
-           "Enable Server Side Encryption of the object in S3")}
+GRANTS = {
+    'name': 'grants', 'nargs': '+',
+    'help_text': (
+        '<p>Grant specific permissions to individual users or groups. You '
+        'can supply a list of grants of the form</p><codeblock>--grants '
+        'Permission=Grantee_Type=Grantee_ID [Permission=Grantee_Type='
+        'Grantee_ID ...]</codeblock>To specify the same permission type '
+        'for multiple '
+        'grantees, specify the permission as such as <codeblock>--grants '
+        'Permission=Grantee_Type=Grantee_ID,Grantee_Type=Grantee_ID,...'
+        '</codeblock>Each value contains the following elements:'
+        '<ul><li><code>Permission</code> - Specifies '
+        'the granted permissions, and can be set to read, readacl, '
+        'writeacl, or full.</li><li><code>Grantee_Type</code> - '
+        'Specifies how the grantee is to be identified, and can be set '
+        'to uri, emailaddress, or id.</li><li><code>Grantee_ID</code> - '
+        'Specifies the grantee based on Grantee_Type.</li></ul>The '
+        '<code>Grantee_ID</code> value can be one of:<ul><li><b>uri</b> '
+        '- The group\'s URI. For more information, see '
+        '<a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/'
+        'ACLOverview.html#SpecifyingGrantee">'
+        'Who Is a Grantee?</a></li>'
+        '<li><b>emailaddress</b> - The account\'s email address.</li>'
+        '<li><b>id</b> - The account\'s canonical ID</li></ul>'
+        '</li></ul>'
+        'For more information on Amazon S3 access control, see '
+        '<a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/'
+        'UsingAuthAccess.html">Access Control</a>')}
 
-STORAGE_CLASS = {'name': 'storage-class', 'nargs': 1,
-                 'choices': ['STANDARD', 'REDUCED_REDUNDANCY'],
+
+SSE = {
+    'name': 'sse', 'nargs': '?', 'const': 'AES256',
+    'choices': ['AES256', 'aws:kms'],
+    'help_text': (
+        'Specifies server-side encryption of the object in S3. '
+        'Valid values are ``AES256`` and ``aws:kms``. If the parameter is '
+        'specified but no value is provided, ``AES256`` is used.'
+    )
+}
+
+
+SSE_C = {
+    'name': 'sse-c', 'nargs': '?', 'const': 'AES256', 'choices': ['AES256'],
+    'help_text': (
+        'Specifies server-side encryption using customer provided keys '
+        'of the the object in S3. ``AES256`` is the only valid value. '
+        'If the parameter is specified but no value is provided, '
+        '``AES256`` is used. If you provide this value, ``--sse-c-key`` '
+        'be specfied as well.'
+    )
+}
+
+
+SSE_C_KEY = {
+    'name': 'sse-c-key',
+    'help_text': (
+        'The customer-provided encryption key to use to server-side '
+        'encrypt the object in S3. If you provide this value, '
+        '``--sse-c`` be specfied as well.'
+    )
+}
+
+
+SSE_KMS_KEY_ID = {
+    'name': 'sse-kms-key-id',
+    'help_text': (
+        'The AWS KMS key ID that should be used to server-side '
+        'encrypt the object in S3. Note that you should only '
+        'provide this parameter if KMS key ID is different the '
+        'default S3 master KMS key.'
+    )
+}
+
+
+SSE_C_COPY_SOURCE = {
+    'name': 'sse-c-copy-source', 'nargs': '?',
+    'const': 'AES256', 'choices': ['AES256'],
+    'help_text': (
+        'This parameter should only be specified when copying an S3 object '
+        'that was encrypted server-side with a customer-provided '
+        'key. It specifies the algorithm to use when decrypting the source '
+        'object. ``AES256`` is the only valid '
+        'value. If the parameter is specified but no value is provided, '
+        '``AES256`` is used. If you provide this value, '
+        '``--sse-c-copy-source-key`` be specfied as well. '
+    )
+}
+
+
+SSE_C_COPY_SOURCE_KEY = {
+    'name': 'sse-c-copy-source-key',
+    'help_text': (
+        'This parameter should only be specified when copying an S3 object '
+        'that was encrypted server-side with a customer-provided '
+        'key. Specifies the customer-provided encryption key for Amazon S3 '
+        'to use to decrypt the source object. The encryption key provided '
+        'must be one that was used when the source object was created. '
+        'If you provide this value, ``--sse-c-copy-source`` be specfied as '
+        'well.'
+    )
+}
+
+
+STORAGE_CLASS = {'name': 'storage-class',
+                 'choices': ['STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA'],
                  'help_text': (
                      "The type of storage to use for the object. "
-                     "Valid choices are: STANDARD | REDUCED_REDUNDANCY. "
+                     "Valid choices are: STANDARD | REDUCED_REDUNDANCY "
+                     "| STANDARD_IA. "
                      "Defaults to 'STANDARD'")}
 
-WEBSITE_REDIRECT = {'name': 'website-redirect', 'nargs': 1,
+
+WEBSITE_REDIRECT = {'name': 'website-redirect',
                     'help_text': (
                         "If the bucket is configured as a website, "
                         "redirects requests for this object to another object "
@@ -143,27 +255,32 @@ WEBSITE_REDIRECT = {'name': 'website-redirect', 'nargs': 1,
                         "stores the value of this header in the object "
                         "metadata.")}
 
-CACHE_CONTROL = {'name': 'cache-control', 'nargs': 1,
+
+CACHE_CONTROL = {'name': 'cache-control',
                  'help_text': (
                      "Specifies caching behavior along the "
                      "request/reply chain.")}
 
-CONTENT_DISPOSITION = {'name': 'content-disposition', 'nargs': 1,
+
+CONTENT_DISPOSITION = {'name': 'content-disposition',
                        'help_text': (
                            "Specifies presentational information "
                            "for the object.")}
 
-CONTENT_ENCODING = {'name': 'content-encoding', 'nargs': 1,
+
+CONTENT_ENCODING = {'name': 'content-encoding',
                     'help_text': (
                         "Specifies what content encodings have been "
                         "applied to the object and thus what decoding "
                         "mechanisms must be applied to obtain the media-type "
                         "referenced by the Content-Type header field.")}
 
-CONTENT_LANGUAGE = {'name': 'content-language', 'nargs': 1,
+
+CONTENT_LANGUAGE = {'name': 'content-language',
                     'help_text': ("The language the content is in.")}
 
-SOURCE_REGION = {'name': 'source-region', 'nargs': 1,
+
+SOURCE_REGION = {'name': 'source-region',
                  'help_text': (
                      "When transferring objects from an s3 bucket to an s3 "
                      "bucket, this specifies the region of the source bucket."
@@ -173,8 +290,35 @@ SOURCE_REGION = {'name': 'source-region', 'nargs': 1,
                      "specified the region of the source will be the same "
                      "as the region of the destination bucket.")}
 
-EXPIRES = {'name': 'expires', 'nargs': 1, 'help_text': ("The date and time at "
-           "which the object is no longer cacheable.")}
+
+EXPIRES = {
+    'name': 'expires',
+    'help_text': (
+        "The date and time at which the object is no longer cacheable.")
+}
+
+
+METADATA_DIRECTIVE = {
+    'name': 'metadata-directive', 'choices': ['COPY', 'REPLACE'],
+    'help_text': (
+        'Specifies whether the metadata is copied from the source object '
+        'or replaced with metadata provided when copying S3 objects. '
+        'Note that if the object is copied over in parts, the source '
+        'object\'s metadata will not be copied over, no matter the value for '
+        '``--metadata-directive``, and instead the desired metadata values '
+        'must be specified as parameters on the command line. '
+        'Valid values are ``COPY`` and ``REPLACE``. If this parameter is not '
+        'specified, ``COPY`` will be used by default. If ``REPLACE`` is used, '
+        'the copied object will only have the metadata values that were'
+        ' specified by the CLI command. Note that if you are '
+        'using any of the following parameters: ``--content-type``, '
+        '``content-language``, ``--content-encoding``, '
+        '``--content-disposition``, ``-cache-control``, or ``--expires``, you '
+        'will need to specify ``--metadata-directive REPLACE`` for '
+        'non-multipart copies if you want the copied objects to have the '
+        'specified metadata values.')
+}
+
 
 INDEX_DOCUMENT = {'name': 'index-document',
                   'help_text': (
@@ -186,15 +330,18 @@ INDEX_DOCUMENT = {'name': 'index-document',
                       'images/index.html) The suffix must not be empty and '
                       'must not include a slash character.')}
 
+
 ERROR_DOCUMENT = {'name': 'error-document',
                   'help_text': (
                       'The object key name to use when '
                       'a 4XX class error occurs.')}
 
+
 ONLY_SHOW_ERRORS = {'name': 'only-show-errors', 'action': 'store_true',
                     'help_text': (
                         'Only errors and warnings are displayed. All other '
                         'output is suppressed.')}
+
 
 EXPECTED_SIZE = {'name': 'expected-size',
                  'help_text': (
@@ -206,29 +353,44 @@ EXPECTED_SIZE = {'name': 'expected-size',
                      'due to too many parts in upload.')}
 
 
-PAGE_SIZE = {'name': 'page-size', 'help_text': 'The size of each page.',
-             'cli_type_name': 'integer'}
+PAGE_SIZE = {'name': 'page-size', 'cli_type_name': 'integer',
+             'help_text': (
+                 'The number of results to return in each response to a list '
+                 'operation. The default value is 1000 (the maximum allowed). '
+                 'Using a lower value may help if an operation times out.')}
 
 
-TRANSFER_ARGS = [DRYRUN, QUIET, RECURSIVE, INCLUDE, EXCLUDE, ACL,
+IGNORE_GLACIER_WARNINGS = {
+    'name': 'ignore-glacier-warnings', 'action': 'store_true',
+    'help_text': (
+        'Turns off glacier warnings. Warnings about operations that cannot '
+        'be performed because it involves copying, downloading, or moving '
+        'a glacier object will no longer be printed to standard error and '
+        'will no longer cause the return code of the command to be ``2``.'
+    )
+}
+
+
+TRANSFER_ARGS = [DRYRUN, QUIET, INCLUDE, EXCLUDE, ACL,
                  FOLLOW_SYMLINKS, NO_FOLLOW_SYMLINKS, NO_GUESS_MIME_TYPE,
-                 SSE, STORAGE_CLASS, GRANTS, WEBSITE_REDIRECT, CONTENT_TYPE,
-                 CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_ENCODING,
-                 CONTENT_LANGUAGE, EXPIRES, SOURCE_REGION, ONLY_SHOW_ERRORS,
-                 PAGE_SIZE]
+                 SSE, SSE_C, SSE_C_KEY, SSE_KMS_KEY_ID, SSE_C_COPY_SOURCE,
+                 SSE_C_COPY_SOURCE_KEY, STORAGE_CLASS, GRANTS,
+                 WEBSITE_REDIRECT, CONTENT_TYPE, CACHE_CONTROL,
+                 CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LANGUAGE,
+                 EXPIRES, SOURCE_REGION, ONLY_SHOW_ERRORS,
+                 PAGE_SIZE, IGNORE_GLACIER_WARNINGS]
 
 
-def get_endpoint(service, region, endpoint_url, verify):
-    return service.get_endpoint(region_name=region, endpoint_url=endpoint_url,
-                                verify=verify)
-
+def get_client(session, region, endpoint_url, verify, config=None):
+    return session.create_client('s3', region_name=region,
+                                 endpoint_url=endpoint_url, verify=verify,
+                                 config=config)
 
 class S3Command(BasicCommand):
     def _run_main(self, parsed_args, parsed_globals):
-        self.service = self._session.get_service('s3')
-        self.endpoint = get_endpoint(self.service, parsed_globals.region,
-                                     parsed_globals.endpoint_url,
-                                     parsed_globals.verify_ssl)
+        self.client = get_client(self._session, parsed_globals.region,
+                                 parsed_globals.endpoint_url,
+                                 parsed_globals.verify_ssl)
 
 
 class ListCommand(S3Command):
@@ -236,16 +398,18 @@ class ListCommand(S3Command):
     DESCRIPTION = ("List S3 objects and common prefixes under a prefix or "
                    "all S3 buckets. Note that the --output argument "
                    "is ignored for this command.")
-    USAGE = "<S3Path> or NONE"
+    USAGE = "<S3Uri> or NONE"
     ARG_TABLE = [{'name': 'paths', 'nargs': '?', 'default': 's3://',
                   'positional_arg': True, 'synopsis': USAGE}, RECURSIVE,
-                 PAGE_SIZE]
-    EXAMPLES = BasicCommand.FROM_FILE('s3/ls.rst')
+                 PAGE_SIZE, HUMAN_READABLE, SUMMARIZE]
 
     def _run_main(self, parsed_args, parsed_globals):
         super(ListCommand, self)._run_main(parsed_args, parsed_globals)
         self._empty_result = False
         self._at_first_page = True
+        self._size_accumulator = 0
+        self._total_objects = 0
+        self._human_readable = parsed_args.human_readable
         path = parsed_args.paths
         if path.startswith('s3://'):
             path = path[5:]
@@ -258,8 +422,10 @@ class ListCommand(S3Command):
                                              parsed_args.page_size)
         else:
             self._list_all_objects(bucket, key, parsed_args.page_size)
+        if parsed_args.summarize:
+            self._print_summary()
         if key:
-            # User specified a key to look for. We should return an rc of one   
+            # User specified a key to look for. We should return an rc of one
             # if there are no matching keys and/or prefixes or return an rc
             # of zero if there are matching keys or prefixes.
             return self._check_no_objects()
@@ -273,12 +439,11 @@ class ListCommand(S3Command):
             return 0
 
     def _list_all_objects(self, bucket, key, page_size=None):
-
-        operation = self.service.get_operation('ListObjects')
-        iterator = operation.paginate(self.endpoint, bucket=bucket,
-                                      prefix=key, delimiter='/',
-                                      page_size=page_size)
-        for _, response_data in iterator:
+        paginator = self.client.get_paginator('list_objects')
+        iterator = paginator.paginate(Bucket=bucket,
+                                      Prefix=key, Delimiter='/',
+                                      PaginationConfig={'PageSize': page_size})
+        for response_data in iterator:
             self._display_page(response_data)
 
     def _display_page(self, response_data, use_basename=True):
@@ -295,6 +460,8 @@ class ListCommand(S3Command):
             uni_print(print_str)
         for content in contents:
             last_mod_str = self._make_last_mod_str(content['LastModified'])
+            self._size_accumulator += int(content['Size'])
+            self._total_objects += 1
             size_str = self._make_size_str(content['Size'])
             if use_basename:
                 filename_components = content['Key'].split('/')
@@ -307,8 +474,7 @@ class ListCommand(S3Command):
         self._at_first_page = False
 
     def _list_all_buckets(self):
-        operation = self.service.get_operation('ListBuckets')
-        response_data = operation.call(self.endpoint)[1]
+        response_data = self.client.list_buckets()
         buckets = response_data['Buckets']
         for bucket in buckets:
             last_mod_str = self._make_last_mod_str(bucket['CreationDate'])
@@ -316,10 +482,11 @@ class ListCommand(S3Command):
             uni_print(print_str)
 
     def _list_all_objects_recursive(self, bucket, key, page_size=None):
-        operation = self.service.get_operation('ListObjects')
-        iterator = operation.paginate(self.endpoint, bucket=bucket,
-                                      prefix=key, page_size=page_size)
-        for _, response_data in iterator:
+        paginator = self.client.get_paginator('list_objects')
+        iterator = paginator.paginate(Bucket=bucket,
+                                      Prefix=key,
+                                      PaginationConfig={'PageSize': page_size})
+        for response_data in iterator:
             self._display_page(response_data, use_basename=False)
 
     def _check_no_objects(self):
@@ -348,24 +515,38 @@ class ListCommand(S3Command):
         """
         This function creates the size string when objects are being listed.
         """
-        size_str = str(size)
+        if self._human_readable:
+            size_str = human_readable_size(size)
+        else:
+            size_str = str(size)
         return size_str.rjust(10, ' ')
+
+    def _print_summary(self):
+        """
+        This function prints a summary of total objects and total bytes
+        """
+        print_str = str(self._total_objects)
+        uni_print("\nTotal Objects: ".rjust(15, ' ') + print_str + "\n")
+        if self._human_readable:
+            print_str = human_readable_size(self._size_accumulator)
+        else:
+            print_str = str(self._size_accumulator)
+        uni_print("Total Size: ".rjust(15, ' ') + print_str + "\n")
 
 
 class WebsiteCommand(S3Command):
     NAME = 'website'
     DESCRIPTION = 'Set the website configuration for a bucket.'
-    USAGE = '<S3Path>'
+    USAGE = '<S3Uri>'
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}, INDEX_DOCUMENT, ERROR_DOCUMENT]
 
     def _run_main(self, parsed_args, parsed_globals):
         super(WebsiteCommand, self)._run_main(parsed_args, parsed_globals)
-        operation = self.service.get_operation('PutBucketWebsite')
         bucket = self._get_bucket_name(parsed_args.paths[0])
         website_configuration = self._build_website_configuration(parsed_args)
-        operation.call(self.endpoint, bucket=bucket,
-                       website_configuration=website_configuration)
+        self.client.put_bucket_website(
+            Bucket=bucket, WebsiteConfiguration=website_configuration)
         return 0
 
     def _build_website_configuration(self, parsed_args):
@@ -397,17 +578,21 @@ class S3TransferCommand(S3Command):
         super(S3TransferCommand, self)._run_main(parsed_args, parsed_globals)
         self._convert_path_args(parsed_args)
         params = self._build_call_parameters(parsed_args, {})
-        cmd_params = CommandParameters(self._session, self.NAME, params,
+        cmd_params = CommandParameters(self.NAME, params,
                                        self.USAGE)
         cmd_params.add_region(parsed_globals)
         cmd_params.add_endpoint_url(parsed_globals)
         cmd_params.add_verify_ssl(parsed_globals)
         cmd_params.add_page_size(parsed_args)
         cmd_params.add_paths(parsed_args.paths)
-        cmd_params.check_force(parsed_globals)
+        self._handle_rm_force(parsed_globals, cmd_params.parameters)
+
+        runtime_config = transferconfig.RuntimeConfig().build_config(
+            **self._session.get_scoped_config().get('s3', {}))
         cmd = CommandArchitecture(self._session, self.NAME,
-                                  cmd_params.parameters)
-        cmd.set_endpoints()
+                                  cmd_params.parameters,
+                                  runtime_config)
+        cmd.set_clients()
         cmd.create_instructions()
         return cmd.run()
 
@@ -431,65 +616,93 @@ class S3TransferCommand(S3Command):
                 new_path = enc_path.decode('utf-8')
                 parsed_args.paths[i] = new_path
 
+    def _handle_rm_force(self, parsed_globals, parameters):
+        """
+        This function recursively deletes objects in a bucket if the force
+        parameter was thrown when using the remove bucket command. It will
+        refuse to delete if a key is specified in the s3path.
+        """
+        # XXX: This shouldn't really be here.  This was originally moved from
+        # the CommandParameters class to here, but this is still not the ideal
+        # place for this code.  This should be moved
+        # to either the CommandArchitecture class, or the RbCommand class where
+        # the actual operations against S3 are performed.  This may require
+        # some refactoring though to move this to either of those classes.
+        # For now, moving this out of CommandParameters allows for that class
+        # to be kept simple.
+        if 'force' in parameters:
+            if parameters['force']:
+                bucket, key = find_bucket_key(parameters['src'][5:])
+                if key:
+                    raise ValueError('Please specify a valid bucket name only.'
+                                     ' E.g. s3://%s' % bucket)
+                path = 's3://' + bucket
+                del_objects = RmCommand(self._session)
+                del_objects([path, '--recursive'], parsed_globals)
+
 
 class CpCommand(S3TransferCommand):
     NAME = 'cp'
     DESCRIPTION = "Copies a local file or S3 object to another location " \
                   "locally or in S3."
-    USAGE = "<LocalPath> <S3Path> or <S3Path> <LocalPath> " \
-            "or <S3Path> <S3Path>"
+    USAGE = "<LocalPath> <S3Uri> or <S3Uri> <LocalPath> " \
+            "or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
-                  'synopsis': USAGE}] + TRANSFER_ARGS + [EXPECTED_SIZE]
-    EXAMPLES = BasicCommand.FROM_FILE('s3/cp.rst')
+                  'synopsis': USAGE}] + TRANSFER_ARGS + \
+                [METADATA_DIRECTIVE, EXPECTED_SIZE, RECURSIVE]
 
 
 class MvCommand(S3TransferCommand):
     NAME = 'mv'
     DESCRIPTION = "Moves a local file or S3 object to " \
                   "another location locally or in S3."
-    USAGE = "<LocalPath> <S3Path> or <S3Path> <LocalPath> " \
-            "or <S3Path> <S3Path>"
+    USAGE = "<LocalPath> <S3Uri> or <S3Uri> <LocalPath> " \
+            "or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
-                  'synopsis': USAGE}] + TRANSFER_ARGS
-    EXAMPLES = BasicCommand.FROM_FILE('s3/mv.rst')
-
+                  'synopsis': USAGE}] + TRANSFER_ARGS + [METADATA_DIRECTIVE,
+                                                         RECURSIVE]
 
 class RmCommand(S3TransferCommand):
     NAME = 'rm'
     DESCRIPTION = "Deletes an S3 object."
-    USAGE = "<S3Path>"
+    USAGE = "<S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}, DRYRUN, QUIET, RECURSIVE, INCLUDE,
                  EXCLUDE, ONLY_SHOW_ERRORS, PAGE_SIZE]
-    EXAMPLES = BasicCommand.FROM_FILE('s3/rm.rst')
 
 
 class SyncCommand(S3TransferCommand):
     NAME = 'sync'
-    DESCRIPTION = "Syncs directories and S3 prefixes."
-    USAGE = "<LocalPath> <S3Path> or <S3Path> " \
-            "<LocalPath> or <S3Path> <S3Path>"
+    DESCRIPTION = "Syncs directories and S3 prefixes. Recursively copies " \
+                  "new and updated files from the source directory to " \
+                  "the destination. Only creates folders in the destination " \
+                  "if they contain one or more files."
+    USAGE = "<LocalPath> <S3Uri> or <S3Uri> " \
+            "<LocalPath> or <S3Uri> <S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 2, 'positional_arg': True,
                   'synopsis': USAGE}] + TRANSFER_ARGS
-    EXAMPLES = BasicCommand.FROM_FILE('s3/sync.rst')
 
 
 class MbCommand(S3TransferCommand):
     NAME = 'mb'
     DESCRIPTION = "Creates an S3 bucket."
-    USAGE = "<S3Path>"
+    USAGE = "<S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}]
-    EXAMPLES = BasicCommand.FROM_FILE('s3/mb.rst')
 
 
 class RbCommand(S3TransferCommand):
     NAME = 'rb'
-    DESCRIPTION = "Deletes an S3 bucket."
-    USAGE = "<S3Path>"
+    DESCRIPTION = (
+        "Deletes an empty S3 bucket. A bucket must be completely empty "
+        "of objects and versioned objects before it can be deleted. "
+        "However, the ``--force`` parameter can be used to delete "
+        "the non-versioned objects in the bucket before the bucket is "
+        "deleted."
+    )
+    USAGE = "<S3Uri>"
     ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
                   'synopsis': USAGE}, FORCE]
-    EXAMPLES = BasicCommand.FROM_FILE('s3/rb.rst')
 
 
 class CommandArchitecture(object):
@@ -502,30 +715,43 @@ class CommandArchitecture(object):
     lsit of instructions to wire together an assortment of generators to
     perform the command.
     """
-    def __init__(self, session, cmd, parameters):
+    def __init__(self, session, cmd, parameters, runtime_config=None):
         self.session = session
         self.cmd = cmd
         self.parameters = parameters
         self.instructions = []
-        self._service = self.session.get_service('s3')
+        self._runtime_config = runtime_config
         self._endpoint = None
         self._source_endpoint = None
+        self._client = None
+        self._source_client = None
 
-    def set_endpoints(self):
-        self._endpoint = get_endpoint(
-            self._service,
+    def set_clients(self):
+        client_config = None
+        if self.parameters.get('sse') == 'aws:kms':
+            client_config = Config(signature_version='s3v4')
+        self._client = get_client(
+            self.session,
             region=self.parameters['region'],
             endpoint_url=self.parameters['endpoint_url'],
-            verify=self.parameters['verify_ssl']
+            verify=self.parameters['verify_ssl'],
+            config=client_config
         )
-        self._source_endpoint = self._endpoint
+        self._source_client = get_client(
+            self.session,
+            region=self.parameters['region'],
+            endpoint_url=self.parameters['endpoint_url'],
+            verify=self.parameters['verify_ssl'],
+            config=client_config
+        )
         if self.parameters['source_region']:
             if self.parameters['paths_type'] == 's3s3':
-                self._source_endpoint = get_endpoint(
-                    self._service,
-                    region=self.parameters['source_region'][0],
+                self._source_client = get_client(
+                    self.session,
+                    region=self.parameters['source_region'],
                     endpoint_url=None,
-                    verify=self.parameters['verify_ssl']
+                    verify=self.parameters['verify_ssl'],
+                    config=client_config
                 )
 
     def create_instructions(self):
@@ -550,7 +776,7 @@ class CommandArchitecture(object):
             return False
         else:
             return True
-    
+
     def choose_sync_strategies(self):
         """Determines the sync strategy for the command.
 
@@ -619,21 +845,47 @@ class CommandArchitecture(object):
         }
         result_queue = queue.Queue()
         operation_name = cmd_translation[paths_type][self.cmd]
-        file_generator = FileGenerator(self._service,
-                                       self._source_endpoint,
-                                       operation_name,
-                                       self.parameters['follow_symlinks'],
-                                       self.parameters['page_size'],
-                                       result_queue=result_queue)
-        rev_generator = FileGenerator(self._service, self._endpoint, '',
-                                      self.parameters['follow_symlinks'],
-                                      self.parameters['page_size'],
-                                      result_queue=result_queue)
+
+        fgen_kwargs = {
+            'client': self._source_client, 'operation_name': operation_name,
+            'follow_symlinks': self.parameters['follow_symlinks'],
+            'page_size': self.parameters['page_size'],
+            'result_queue': result_queue
+        }
+        rgen_kwargs = {
+            'client': self._client, 'operation_name': '',
+            'follow_symlinks': self.parameters['follow_symlinks'],
+            'page_size': self.parameters['page_size'],
+            'result_queue': result_queue
+        }
+
+        fgen_request_parameters = {}
+        fgen_head_object_params = {}
+        fgen_request_parameters['HeadObject'] = fgen_head_object_params
+        fgen_kwargs['request_parameters'] = fgen_request_parameters
+
+        # SSE-C may be neaded for HeadObject for copies/downloads/deletes
+        # If the operation is s3 to s3, the FileGenerator should use the
+        # copy source key and algorithm. Otherwise, use the regular
+        # SSE-C key and algorithm. Note the reverse FileGenerator does
+        # not need any of these because it is used only for sync operations
+        # which only use ListObjects which does not require HeadObject.
+        RequestParamsMapper.map_head_object_params(
+            fgen_head_object_params, self.parameters)
+        if paths_type == 's3s3':
+            RequestParamsMapper.map_head_object_params(
+                fgen_head_object_params, {
+                    'sse_c': self.parameters.get('sse_c_copy_source'),
+                    'sse_c_key': self.parameters.get('sse_c_copy_source_key')
+                }
+            )
+
+        file_generator = FileGenerator(**fgen_kwargs)
+        rev_generator = FileGenerator(**rgen_kwargs)
         taskinfo = [TaskInfo(src=files['src']['path'],
                              src_type='s3',
                              operation_name=operation_name,
-                             service=self._service,
-                             endpoint=self._endpoint)]
+                             client=self._client)]
         stream_dest_path, stream_compare_key = find_dest_path_comp_key(files)
         stream_file_info = [FileInfo(src=files['src']['path'],
                                      dest=stream_dest_path,
@@ -641,12 +893,12 @@ class CommandArchitecture(object):
                                      src_type=files['src']['type'],
                                      dest_type=files['dest']['type'],
                                      operation_name=operation_name,
-                                     service=self._service,
-                                     endpoint=self._endpoint,
+                                     client=self._client,
                                      is_stream=True)]
-        file_info_builder = FileInfoBuilder(self._service, self._endpoint,
-                                 self._source_endpoint, self.parameters) 
+        file_info_builder = FileInfoBuilder(
+            self._client, self._source_client, self.parameters)
         s3handler = S3Handler(self.session, self.parameters,
+                              runtime_config=self._runtime_config,
                               result_queue=result_queue)
         s3_stream_handler = S3StreamHandler(self.session, self.parameters,
                                             result_queue=result_queue)
@@ -665,7 +917,7 @@ class CommandArchitecture(object):
                             's3_handler': [s3handler]}
         elif self.cmd == 'cp' and self.parameters['is_stream']:
             command_dict = {'setup': [stream_file_info],
-                             's3_handler': [s3_stream_handler]}
+                            's3_handler': [s3_stream_handler]}
         elif self.cmd == 'cp':
             command_dict = {'setup': [files],
                             'file_generator': [file_generator],
@@ -709,7 +961,7 @@ class CommandArchitecture(object):
         # tasks failed and the number of tasks warned.
         # This means that files[0] now contains a namedtuple with
         # the number of failed tasks and the number of warned tasks.
-        # In terms of the RC, we're keeping it simple and saying 
+        # In terms of the RC, we're keeping it simple and saying
         # that > 0 failed tasks will give a 1 RC and > 0 warned
         # tasks will give a 2 RC.  Otherwise a RC of zero is returned.
         rc = 0
@@ -725,12 +977,16 @@ class CommandParameters(object):
     This class is used to do some initial error based on the
     parameters and arguments passed to the command line.
     """
-    def __init__(self, session, cmd, parameters, usage):
+    def __init__(self, cmd, parameters, usage):
         """
         Stores command name and parameters.  Ensures that the ``dir_op`` flag
         is true if a certain command is being used.
+
+        :param cmd: The name of the command, e.g. "rm".
+        :param parameters: A dictionary of parameters.
+        :param usage: A usage string
+
         """
-        self.session = session
         self.cmd = cmd
         self.parameters = parameters
         self.usage = usage
@@ -760,6 +1016,7 @@ class CommandParameters(object):
             self.parameters['dest'] = paths[0]
         self._validate_streaming_paths()
         self._validate_path_args()
+        self._validate_sse_c_args()
 
     def _validate_streaming_paths(self):
         self.parameters['is_stream'] = False
@@ -777,6 +1034,20 @@ class CommandParameters(object):
         if self.cmd == 'mv' and self._same_path(params['src'], params['dest']):
             raise ValueError("Cannot mv a file onto itself: '%s' - '%s'" % (
                 params['src'], params['dest']))
+
+        # If the user provided local path does not exist, hard fail because
+        # we know that we will not be able to upload the file.
+        if 'locals3' == params['paths_type'] and not params['is_stream']:
+            if not os.path.exists(params['src']):
+                raise RuntimeError(
+                    'The user-provided path %s does not exist.' %
+                    params['src'])
+        # If the operation is downloading to a directory that does not exist,
+        # create the directories so no warnings are thrown during the syncing
+        # process.
+        elif 's3local' == params['paths_type'] and params['dir_op']:
+            if not os.path.exists(params['dest']):
+                os.makedirs(params['dest'])
 
     def _same_path(self, src, dest):
         if not self.parameters['paths_type'] == 's3s3':
@@ -797,14 +1068,6 @@ class CommandParameters(object):
                     # with a '/', s3://bucket -> s3://bucket/
                     path += '/'
                     paths[i] = path
-
-    def _verify_bucket_exists(self, bucket_name):
-        session = self.session
-        service = session.get_service('s3')
-        endpoint = service.get_endpoint(self.parameters['region'])
-        operation = service.get_operation('ListObjects')
-        # This will raise an exception if the bucket does not exist.
-        operation.call(endpoint, bucket=bucket_name, max_keys=0)
 
     def check_path_type(self, paths):
         """
@@ -829,50 +1092,6 @@ class CommandParameters(object):
         else:
             raise TypeError("%s\nError: Invalid argument type" % usage)
 
-    def check_src_path(self, paths):
-        """
-        This checks the source paths to deem if they are valid.  The check
-        performed in S3 is first it lists the objects using the source path.
-        If there is an error like the bucket does not exist, the error will be
-        caught with ``check_error()`` function.  If the operation is on a
-        single object in s3, it checks that a list of object was returned and
-        that the first object listed is the name of the specified in the
-        command line.  If the operation is on objects under a common prefix,
-        it will check that there are common prefixes and objects under
-        the specified prefix.
-        For local files, it first checks that the path exists.  Then it checks
-        that the path is a directory if it is a directory operation or that
-        the path is a file if the operation is on a single file.
-        """
-        src_path = paths[0]
-        dir_op = self.parameters['dir_op']
-        if not src_path.startswith('s3://'):
-            src_path = os.path.abspath(src_path)
-            if os.path.exists(src_path):
-                if os.path.isdir(src_path) and not dir_op:
-                    raise Exception("Error: Requires a local file")
-                elif os.path.isfile(src_path) and dir_op:
-                    raise Exception("Error: Requires a local directory")
-                else:
-                    pass
-            else:
-                raise Exception("Error: Local path does not exist")
-
-    def check_force(self, parsed_globals):
-        """
-        This function recursive deletes objects in a bucket if the force
-        parameters was thrown when using the remove bucket command.
-        """
-        if 'force' in self.parameters:
-            if self.parameters['force']:
-                bucket = find_bucket_key(self.parameters['src'][5:])[0]
-                path = 's3://' + bucket
-                try:
-                    del_objects = RmCommand(self.session)
-                    del_objects([path, '--recursive'], parsed_globals)
-                except:
-                    pass
-
     def add_region(self, parsed_globals):
         self.parameters['region'] = parsed_globals.region
 
@@ -891,3 +1110,33 @@ class CommandParameters(object):
 
     def add_page_size(self, parsed_args):
         self.parameters['page_size'] = getattr(parsed_args, 'page_size', None)
+
+    def _validate_sse_c_args(self):
+        self._validate_sse_c_arg()
+        self._validate_sse_c_arg('sse_c_copy_source')
+        self._validate_sse_c_copy_source_for_paths()
+
+    def _validate_sse_c_arg(self, sse_c_type='sse_c'):
+        sse_c_key_type = sse_c_type + '_key'
+        sse_c_type_param = '--' + sse_c_type.replace('_', '-')
+        sse_c_key_type_param = '--' + sse_c_key_type.replace('_', '-')
+        if self.parameters.get(sse_c_type):
+            if not self.parameters.get(sse_c_key_type):
+                raise ValueError(
+                    'It %s is specified, %s must be specified '
+                    'as well.' % (sse_c_type_param, sse_c_key_type_param)
+                )
+        if self.parameters.get(sse_c_key_type):
+            if not self.parameters.get(sse_c_type):
+                raise ValueError(
+                    'It %s is specified, %s must be specified '
+                    'as well.' % (sse_c_key_type_param, sse_c_type_param)
+                )
+
+    def _validate_sse_c_copy_source_for_paths(self):
+        if self.parameters.get('sse_c_copy_source'):
+            if self.parameters['paths_type'] != 's3s3':
+                raise ValueError(
+                    '--sse-c-copy-source is only supported for '
+                    'copy operations.'
+                )

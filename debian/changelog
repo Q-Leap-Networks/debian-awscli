@@ -1,3 +1,10 @@
+awscli (1.9.9-1) unstable; urgency=medium
+
+  * New upstream release
+  * debian/watch: Use pypi.debian.net. 
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Wed, 25 Nov 2015 00:26:17 +0900
+
 awscli (1.7.0-1) unstable; urgency=medium
 
   * New upstream release

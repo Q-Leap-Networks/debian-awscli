@@ -15,12 +15,13 @@ from awscli.customizations.emr import constants
 from awscli.customizations.emr import emrutils
 from awscli.customizations.emr import hbaseutils
 from awscli.customizations.emr import helptext
-from awscli.customizations.commands import BasicCommand
+from awscli.customizations.emr.command import Command
 
 
-class RestoreFromHBaseBackup(BasicCommand):
+class RestoreFromHBaseBackup(Command):
     NAME = 'restore-from-hbase-backup'
-    DESCRIPTION = ('Restores HBase from S3.')
+    DESCRIPTION = ('Restores HBase from S3. ' +
+                   helptext.AVAILABLE_ONLY_FOR_AMI_VERSIONS)
     ARG_TABLE = [
         {'name': 'cluster-id', 'required': True,
          'help_text': helptext.CLUSTER_ID},
@@ -30,7 +31,7 @@ class RestoreFromHBaseBackup(BasicCommand):
          'help_text': helptext.HBASE_BACKUP_VERSION}
     ]
 
-    def _run_main(self, parsed_args, parsed_globals):
+    def _run_main_command(self, parsed_args, parsed_globals):
         steps = []
         args = hbaseutils.build_hbase_restore_from_backup_args(
             parsed_args.dir, parsed_args.backup_version)
@@ -49,9 +50,10 @@ class RestoreFromHBaseBackup(BasicCommand):
         return 0
 
 
-class ScheduleHBaseBackup(BasicCommand):
+class ScheduleHBaseBackup(Command):
     NAME = 'schedule-hbase-backup'
-    DESCRIPTION = ('Adds a step to schedule automated HBase backup.')
+    DESCRIPTION = ('Adds a step to schedule automated HBase backup. ' +
+                   helptext.AVAILABLE_ONLY_FOR_AMI_VERSIONS)
     ARG_TABLE = [
         {'name': 'cluster-id', 'required': True,
          'help_text': helptext.CLUSTER_ID},
@@ -75,9 +77,7 @@ class ScheduleHBaseBackup(BasicCommand):
                       ' during the backup process.</p>'}
     ]
 
-    EXAMPLES = BasicCommand.FROM_FILE('emr', 'schedule-hbase-backup.rst')
-
-    def _run_main(self, parsed_args, parsed_globals):
+    def _run_main_command(self, parsed_args, parsed_globals):
         steps = []
         self._check_type(parsed_args.type)
         self._check_unit(parsed_args.unit)
@@ -145,9 +145,10 @@ class ScheduleHBaseBackup(BasicCommand):
         return args
 
 
-class CreateHBaseBackup(BasicCommand):
+class CreateHBaseBackup(Command):
     NAME = 'create-hbase-backup'
-    DESCRIPTION = ('Creates a HBase backup in S3.')
+    DESCRIPTION = ('Creates a HBase backup in S3. ' +
+                   helptext.AVAILABLE_ONLY_FOR_AMI_VERSIONS)
     ARG_TABLE = [
         {'name': 'cluster-id', 'required': True,
          'help_text': helptext.CLUSTER_ID},
@@ -159,7 +160,7 @@ class CreateHBaseBackup(BasicCommand):
                       ' process.</p>'}
     ]
 
-    def _run_main(self, parsed_args, parsed_globals):
+    def _run_main_command(self, parsed_args, parsed_globals):
         steps = []
         args = self._build_hbase_backup_args(parsed_args)
 
@@ -187,9 +188,10 @@ class CreateHBaseBackup(BasicCommand):
         return args
 
 
-class DisableHBaseBackups(BasicCommand):
+class DisableHBaseBackups(Command):
     NAME = 'disable-hbase-backups'
-    DESCRIPTION = ('Add a step to disable automated HBase backups.')
+    DESCRIPTION = ('Add a step to disable automated HBase backups. ' +
+                   helptext.AVAILABLE_ONLY_FOR_AMI_VERSIONS)
     ARG_TABLE = [
         {'name': 'cluster-id', 'required': True,
          'help_text': helptext.CLUSTER_ID},
@@ -199,7 +201,7 @@ class DisableHBaseBackups(BasicCommand):
          'help_text': 'Disables incremental backup.'}
     ]
 
-    def _run_main(self, parsed_args, parsed_globals):
+    def _run_main_command(self, parsed_args, parsed_globals):
         steps = []
 
         args = self._build_hbase_disable_backups_args(parsed_args)

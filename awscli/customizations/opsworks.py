@@ -14,11 +14,11 @@ import datetime
 import json
 import logging
 import os
+import platform
 import re
 import shlex
 import socket
 import subprocess
-import sys
 import tempfile
 import textwrap
 
@@ -72,7 +72,6 @@ class OpsWorksRegister(BasicCommand):
         agent on the target machine and register it with an existing OpsWorks
         stack.
     """).strip()
-    EXAMPLES = BasicCommand.FROM_FILE('opsworks/register.rst')
 
     ARG_TABLE = [
         {'name': 'stack-id', 'required': True,
@@ -132,6 +131,8 @@ class OpsWorksRegister(BasicCommand):
             endpoint_args['region_name'] = parsed_globals.region
         if 'endpoint_url' in parsed_globals:
             endpoint_args['endpoint_url'] = parsed_globals.endpoint_url
+        if 'verify_ssl' in parsed_globals:
+            endpoint_args['verify'] = parsed_globals.verify_ssl
         self.iam = self._session.create_client('iam')
         self.opsworks = self._session.create_client(
             'opsworks', **endpoint_args)
@@ -156,7 +157,7 @@ class OpsWorksRegister(BasicCommand):
             raise ValueError(
                 "Arguments target and --local are mutually exclusive.")
 
-        if args.local and sys.platform != 'linux2':
+        if args.local and platform.system() != 'Linux':
             raise ValueError(
                 "Non-Linux instances are not supported by AWS OpsWorks.")
 
@@ -404,7 +405,7 @@ class OpsWorksRegister(BasicCommand):
         Runs a (sh) script on a remote machine via SSH.
         """
 
-        if sys.platform == 'win32':
+        if platform.system() == 'Windows':
             try:
                 script_file = tempfile.NamedTemporaryFile("wt", delete=False)
                 script_file.write(remote_script)

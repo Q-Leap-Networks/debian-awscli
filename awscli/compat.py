@@ -11,6 +11,8 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import sys
+import os
+import zipfile
 
 from botocore.compat import six
 #import botocore.compat
@@ -25,9 +27,35 @@ shlex_quote = six.moves.shlex_quote
 StringIO = six.StringIO
 urlopen = six.moves.urllib.request.urlopen
 
+# Most, but not all, python installations will have zlib. This is required to
+# compress any files we send via a push. If we can't compress, we can still
+# package the files in a zip container.
+try:
+    import zlib
+    ZIP_COMPRESSION_MODE = zipfile.ZIP_DEFLATED
+except ImportError:
+    ZIP_COMPRESSION_MODE = zipfile.ZIP_STORED
+
+
+class BinaryStdout(object):
+    def __enter__(self):
+        if sys.platform == "win32":
+            import msvcrt
+            self.previous_mode = msvcrt.setmode(sys.stdout.fileno(),
+                                                os.O_BINARY)
+        return sys.stdout
+
+    def __exit__(self, type, value, traceback):
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.setmode(sys.stdout.fileno(), self.previous_mode)                
+
+
 if six.PY3:
     import locale
     import urllib.parse as urlparse
+
+    from urllib.error import URLError
 
     raw_input = input
 
@@ -54,6 +82,8 @@ else:
     import locale
     import io
     import urlparse
+
+    from urllib2 import URLError
 
     raw_input = raw_input
 

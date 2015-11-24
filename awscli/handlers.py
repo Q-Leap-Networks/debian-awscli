@@ -22,7 +22,7 @@ from awscli.errorhandler import ErrorHandler
 from awscli.customizations.streamingoutputarg import add_streaming_output_arg
 from awscli.customizations.addexamples import add_examples
 from awscli.customizations.removals import register_removals
-from awscli.customizations.ec2addcount import ec2_add_count
+from awscli.customizations.ec2addcount import register_count_events
 from awscli.customizations.paginate import register_pagination
 from awscli.customizations.ec2decryptpassword import ec2_add_priv_launch_key
 from awscli.customizations.ec2secgroupsimplify import register_secgroup
@@ -35,7 +35,6 @@ from awscli.customizations.putmetricdata import register_put_metric_data
 from awscli.customizations.sessendemail import register_ses_send_email
 from awscli.customizations.iamvirtmfa import IAMVMFAWrapper
 from awscli.customizations.argrename import register_arg_renames
-from awscli.customizations.dryrundocs import register_dryrun_docs
 from awscli.customizations.configure import register_configure_cmd
 from awscli.customizations.cloudtrail import initialize as cloudtrail_init
 from awscli.customizations.toplevelbool import register_bool_params
@@ -52,13 +51,23 @@ from awscli.customizations.generatecliskeleton import \
     register_generate_cli_skeleton
 from awscli.customizations.assumerole import register_assume_role_provider
 from awscli.customizations.waiters import register_add_waiters
-from awscli.customizations.codedeploy import initialize as codedeploy_init
+from awscli.customizations.codedeploy.codedeploy import initialize as \
+    codedeploy_init
 from awscli.customizations.configservice.subscribe import register_subscribe
 from awscli.customizations.configservice.getstatus import register_get_status
 from awscli.customizations.configservice.rename_cmd import \
     register_rename_config
+from awscli.customizations.configservice.putconfigurationrecorder import \
+    register_modify_put_configuration_recorder
 from awscli.customizations.scalarparse import register_scalar_parser
 from awscli.customizations.opsworks import initialize as opsworks_init
+from awscli.customizations.awslambda import register_lambda_create_function
+from awscli.customizations.kms import register_fix_kms_create_grant_docs
+from awscli.customizations.route53 import register_create_hosted_zone_doc_fix
+from awscli.customizations.codecommit import initialize as codecommit_init
+from awscli.customizations.iot_data import register_custom_endpoint_note
+from awscli.customizations.iot import register_create_keys_and_cert_arguments
+from awscli.customizations.iot import register_create_keys_from_csr_arguments
 
 
 def awscli_initialize(event_handlers):
@@ -69,7 +78,8 @@ def awscli_initialize(event_handlers):
     # generic error handler.
     register_s3_error_msg(event_handlers)
     error_handler = ErrorHandler()
-    event_handlers.register('after-call', error_handler)
+    event_handlers.register('after-call', error_handler,
+                            unique_id='awscli-error-handler')
 #    # The following will get fired for every option we are
 #    # documenting.  It will attempt to add an example_fn on to
 #    # the parameter object if the parameter supports shorthand
@@ -84,8 +94,7 @@ def awscli_initialize(event_handlers):
     register_cli_input_json(event_handlers)
     event_handlers.register('building-argument-table.*',
                             add_streaming_output_arg)
-    event_handlers.register('building-argument-table.ec2.run-instances',
-                            ec2_add_count)
+    register_count_events(event_handlers)
     event_handlers.register('building-argument-table.ec2.get-password-data',
                             ec2_add_priv_launch_key)
     register_parse_global_args(event_handlers)
@@ -101,7 +110,6 @@ def awscli_initialize(event_handlers):
     register_ses_send_email(event_handlers)
     IAMVMFAWrapper(event_handlers)
     register_arg_renames(event_handlers)
-    register_dryrun_docs(event_handlers)
     register_configure_cmd(event_handlers)
     cloudtrail_init(event_handlers)
     register_bool_params(event_handlers)
@@ -120,3 +128,15 @@ def awscli_initialize(event_handlers):
     register_rename_config(event_handlers)
     register_scalar_parser(event_handlers)
     opsworks_init(event_handlers)
+    register_lambda_create_function(event_handlers)
+    register_fix_kms_create_grant_docs(event_handlers)
+    register_create_hosted_zone_doc_fix(event_handlers)
+    register_modify_put_configuration_recorder(event_handlers)
+    codecommit_init(event_handlers)
+    register_custom_endpoint_note(event_handlers)
+    event_handlers.register(
+        'building-argument-table.iot.create-keys-and-certificate',
+        register_create_keys_and_cert_arguments)
+    event_handlers.register(
+        'building-argument-table.iot.create-certificate-from-csr',
+        register_create_keys_from_csr_arguments)

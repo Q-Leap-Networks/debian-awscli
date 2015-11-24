@@ -4,54 +4,52 @@ This example registers a task definition to the specified family with container 
 
 Command::
 
-  aws ecs register-task-definition --family sleep360 --container-definitions file://<path_to_json_file>/sleep360.json
+  aws ecs register-task-definition --cli-input-json file://<path_to_json_file>/sleep360.json
 
 JSON file format::
 
-  [
-    {
-      "environment": [],
-      "name": "sleep",
-      "image": "busybox",
-      "cpu": 10,
-      "portMappings": [],
-      "entryPoint": [
-        "/bin/sh"
-      ],
-      "memory": 10,
-      "command": [
-        "sleep",
-        "360"
-      ],
-      "essential": true
-    }
-  ]
+  {
+    "containerDefinitions": [
+      {
+        "name": "sleep",
+        "image": "busybox",
+        "cpu": 10,
+        "command": [
+          "sleep",
+          "360"
+        ],
+        "memory": 10,
+        "essential": true
+      }
+    ],
+    "family": "sleep360"
+  }
 
 Output::
 
 	{
 	    "taskDefinition": {
-	        "taskDefinitionArn": "arn:aws:ecs:us-west-2:<aws_account_id>:task-definition/sleep360:2",
+	        "volumes": [],
+	        "taskDefinitionArn": "arn:aws:ecs:us-east-1:<aws_account_id>:task-definition/sleep360:19",
 	        "containerDefinitions": [
 	            {
 	                "environment": [],
 	                "name": "sleep",
+	                "mountPoints": [],
 	                "image": "busybox",
 	                "cpu": 10,
 	                "portMappings": [],
-	                "entryPoint": [
-	                    "/bin/sh"
-	                ],
-	                "memory": 10,
 	                "command": [
 	                    "sleep",
 	                    "360"
 	                ],
-	                "essential": true
+	                "memory": 10,
+	                "essential": true,
+	                "volumesFrom": []
 	            }
 	        ],
 	        "family": "sleep360",
-	        "revision": 2
+	        "revision": 1
 	    }
 	}
 
@@ -61,32 +59,50 @@ This example registers a the same task definition from the previous example, but
 
 Command::
 
-  aws ecs register-task-definition --family sleep360 --container-definitions "[{\"environment\":[],\"name\":\"sleep\",\"image\":\"busybox\",\"cpu\":10,\"portMappings\":[],\"entryPoint\":[\"/bin/sh\"],\"memory\":10,\"command\":[\"sleep\",\"360\"],\"essential\":true}]"
+  aws ecs register-task-definition --family sleep360 --container-definitions "[{\"name\":\"sleep\",\"image\":\"busybox\",\"cpu\":10,\"command\":[\"sleep\",\"360\"],\"memory\":10,\"essential\":true}]"
 
-Output::
+**To use data volumes in a task definition**
 
-	{
-	    "taskDefinition": {
-	        "taskDefinitionArn": "arn:aws:ecs:us-west-2:<aws_account_id>:task-definition/sleep360:3",
-	        "containerDefinitions": [
-	            {
-	                "environment": [],
-	                "name": "sleep",
-	                "image": "busybox",
-	                "cpu": 10,
-	                "portMappings": [],
-	                "entryPoint": [
-	                    "/bin/sh"
-	                ],
-	                "memory": 10,
-	                "command": [
-	                    "sleep",
-	                    "360"
-	                ],
-	                "essential": true
-	            }
-	        ],
-	        "family": "sleep360",
-	        "revision": 3
-	    }
-	}
+This example task definition creates a data volume called `webdata` that exists at `/ecs/webdata` on the container instance. The volume is mounted read-only as `/usr/share/nginx/html` on the `web` container, and read-write as `/nginx/` on the `timer` container.
+
+Task Definition::
+
+  {
+  	"family": "web-timer",
+  	"containerDefinitions": [
+  	{
+  		"name": "web",
+  		"image": "nginx",
+  		"cpu": 99,
+  		"memory": 100,
+  		"portMappings": [{
+  			"containerPort": 80,
+  			"hostPort": 80
+  		}],
+  		"essential": true,
+  		"mountPoints": [{
+  			"sourceVolume": "webdata",
+  			"containerPath": "/usr/share/nginx/html",
+  			"readOnly": true
+  		}]
+  	}, {
+  		"name": "timer",
+  		"image": "busybox",
+  		"cpu": 10,
+  		"memory": 20,
+		"entryPoint": ["sh", "-c"],
+		"command": ["while true; do date > /nginx/index.html; sleep 1; done"],
+  		"mountPoints": [{
+  			"sourceVolume": "webdata",
+  			"containerPath": "/nginx/"
+  		}]
+  	}],
+  	"volumes": [{
+  		"name": "webdata", 
+  		"host": {
+  			"sourcePath": "/ecs/webdata"
+  		}}
+  	]
+  }
+
+

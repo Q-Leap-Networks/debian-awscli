@@ -4,14 +4,18 @@ This example command creates a cluster in your default region.
 
 Command::
 
-  aws ecs create-cluster --cluster-name "dev_preview"
+  aws ecs create-cluster --cluster-name "my_cluster"
 
 Output::
 
 	{
 	    "cluster": {
-	        "clusterName": "dev_preview",
 	        "status": "ACTIVE",
-	        "clusterArn": "arn:aws:ecs:us-west-2:<aws_account_id>:cluster/dev_preview"
+	        "clusterName": "my_cluster",
+	        "registeredContainerInstancesCount": 0,
+	        "pendingTasksCount": 0,
+	        "runningTasksCount": 0,
+	        "activeServicesCount": 0,
+	        "clusterArn": "arn:aws:ecs:<region>:<aws_account_id>:cluster/my_cluster"
 	    }
 	}

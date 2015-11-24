@@ -11,10 +11,10 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import logging
-import sys
 from botocore.compat import json
 
 from botocore.utils import set_value_from_jmespath
+from botocore.paginate import PageIterator
 
 from awscli.table import MultiTable, Styler, ColorizedStyler
 from awscli import text
@@ -23,6 +23,10 @@ from awscli.utils import json_encoder
 
 
 LOG = logging.getLogger(__name__)
+
+
+def is_response_paginated(response):
+    return isinstance(response, PageIterator)
 
 
 class Formatter(object):
@@ -44,9 +48,15 @@ class Formatter(object):
     def _get_default_stream(self):
         return compat.get_stdout_text_writer()
 
+    def _flush_stream(self, stream):
+        try:
+            stream.flush()
+        except IOError:
+            pass
+
 
 class FullyBufferedFormatter(Formatter):
-    def __call__(self, operation, response, stream=None):
+    def __call__(self, command_name, response, stream=None):
         if stream is None:
             # Retrieve stdout on invocation instead of at import time
             # so that if anything wraps stdout we'll pick up those changes
@@ -54,31 +64,35 @@ class FullyBufferedFormatter(Formatter):
             stream = self._get_default_stream()
         # I think the interfaces between non-paginated
         # and paginated responses can still be cleaned up.
-        if operation.can_paginate and self._args.paginate:
+        if is_response_paginated(response):
             response_data = response.build_full_result()
         else:
             response_data = response
+        self._remove_request_id(response_data)
+        if self._args.query is not None:
+            response_data = self._args.query.search(response_data)
         try:
-            self._remove_request_id(response_data)
-            if self._args.query is not None:
-                response_data = self._args.query.search(response_data)
-            self._format_response(operation, response_data, stream)
+            self._format_response(command_name, response_data, stream)
+        except IOError as e:
+            # If the reading end of our stdout stream has closed the file
+            # we can just exit.
+            pass
         finally:
             # flush is needed to avoid the "close failed in file object
             # destructor" in python2.x (see http://bugs.python.org/issue11380).
-            stream.flush()
+            self._flush_stream(stream)
 
 
 class JSONFormatter(FullyBufferedFormatter):
 
-    def _format_response(self, operation, response, stream):
+    def _format_response(self, command_name, response, stream):
         # For operations that have no response body (e.g. s3 put-object)
         # the response will be an empty string.  We don't want to print
         # that out to the user but other "falsey" values like an empty
         # dictionary should be printed.
-        if response:
+        if response != {}:
             json.dump(response, stream, indent=4, default=json_encoder,
-                      ensure_ascii=False)
+                    ensure_ascii=False)
             stream.write('\n')
 
 
@@ -106,8 +120,8 @@ class TableFormatter(FullyBufferedFormatter):
         else:
             raise ValueError("Unknown color option: %s" % args.color)
 
-    def _format_response(self, operation, response, stream):
-        if self._build_table(operation.name, response):
+    def _format_response(self, command_name, response, stream):
+        if self._build_table(command_name, response):
             try:
                 self.table.render(stream)
             except IOError:
@@ -210,13 +224,13 @@ class TableFormatter(FullyBufferedFormatter):
 
 class TextFormatter(Formatter):
 
-    def __call__(self, operation, response, stream=None):
+    def __call__(self, command_name, response, stream=None):
         if stream is None:
             stream = self._get_default_stream()
         try:
-            if operation.can_paginate and self._args.paginate:
+            if is_response_paginated(response):
                 result_keys = response.result_keys
-                for _, page in response:
+                for page in response:
                     current = {}
                     for result_key in result_keys:
                         data = result_key.search(page)
@@ -238,7 +252,7 @@ class TextFormatter(Formatter):
         finally:
             # flush is needed to avoid the "close failed in file object
             # destructor" in python2.x (see http://bugs.python.org/issue11380).
-            stream.flush()
+            self._flush_stream(stream)
 
     def _format_response(self, response, stream):
         if self._args.query is not None:

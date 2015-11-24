@@ -20,23 +20,10 @@ Forwarded: <no|not-needed|url proving that it has been forwarded>
 Reviewed-By: <name and email of someone who approved the patch>
 Last-Update: <YYYY-MM-DD>
 
-Index: awscli-1.7.0/awscli/customizations/cloudtrail.py
+Index: awscli-1.9.9/awscli/customizations/s3/tasks.py
 ===================================================================
---- awscli-1.7.0.orig/awscli/customizations/cloudtrail.py	2015-01-13 22:57:08.672414671 +0900
-+++ awscli-1.7.0/awscli/customizations/cloudtrail.py	2015-01-13 22:57:08.668414730 +0900
-@@ -16,7 +16,7 @@
- 
- from awscli.customizations.commands import BasicCommand
- from awscli.customizations.service import Service
--from botocore.vendored import requests
-+import requests
- 
- 
- LOG = logging.getLogger(__name__)
-Index: awscli-1.7.0/awscli/customizations/s3/tasks.py
-===================================================================
---- awscli-1.7.0.orig/awscli/customizations/s3/tasks.py	2015-01-13 22:57:08.672414671 +0900
-+++ awscli-1.7.0/awscli/customizations/s3/tasks.py	2015-01-13 22:57:08.668414730 +0900
+--- awscli-1.9.9.orig/awscli/customizations/s3/tasks.py	2015-11-24 17:26:53.449324759 +0900
++++ awscli-1.9.9/awscli/customizations/s3/tasks.py	2015-11-24 17:26:53.425325078 +0900
 @@ -5,7 +5,7 @@
  import socket
  import threading
@@ -44,13 +31,13 @@ Index: awscli-1.7.0/awscli/customizations/s3/tasks.py
 -from botocore.vendored import requests
 +import requests
  from botocore.exceptions import IncompleteReadError
- 
- from awscli.customizations.s3.utils import find_bucket_key, MD5Error, \
-Index: awscli-1.7.0/awscli/paramfile.py
+ from botocore.vendored.requests.packages.urllib3.exceptions import \
+     ReadTimeoutError
+Index: awscli-1.9.9/awscli/paramfile.py
 ===================================================================
---- awscli-1.7.0.orig/awscli/paramfile.py	2015-01-13 22:57:08.672414671 +0900
-+++ awscli-1.7.0/awscli/paramfile.py	2015-01-13 22:58:11.979562183 +0900
-@@ -15,7 +15,7 @@
+--- awscli-1.9.9.orig/awscli/paramfile.py	2015-11-24 17:26:53.449324759 +0900
++++ awscli-1.9.9/awscli/paramfile.py	2015-11-24 17:26:53.425325078 +0900
+@@ -14,7 +14,7 @@
  import logging
  import os
  
@@ -59,13 +46,13 @@ Index: awscli-1.7.0/awscli/paramfile.py
  from awscli.compat import six
  
  from awscli.compat import compat_open
-Index: awscli-1.7.0/awscli/testutils.py
+Index: awscli-1.9.9/awscli/testutils.py
 ===================================================================
---- awscli-1.7.0.orig/awscli/testutils.py	2015-01-13 22:57:08.672414671 +0900
-+++ awscli-1.7.0/awscli/testutils.py	2015-01-13 22:57:08.668414730 +0900
-@@ -46,7 +46,7 @@
- from botocore.hooks import HierarchicalEmitter
+--- awscli-1.9.9.orig/awscli/testutils.py	2015-11-24 17:26:53.449324759 +0900
++++ awscli-1.9.9/awscli/testutils.py	2015-11-24 17:26:53.425325078 +0900
+@@ -51,7 +51,7 @@
  from botocore.session import Session
+ from botocore.exceptions import ClientError
  import botocore.loaders
 -from botocore.vendored import requests
 +import requests
