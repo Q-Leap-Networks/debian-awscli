@@ -1,3 +1,12 @@
+awscli (1.10.1-1) unstable; urgency=medium
+
+  * debian/control
+    - add python3-pyasn1, python3-rsa to fix FTBFS (Closes: #811258)
+    - Depend on python3's botocore. (Closes: #811396)
+  * New upstream release
+
+ -- TANIGUCHI Takaki <takaki@debian.org>  Tue, 02 Feb 2016 19:30:21 +0900
+
 awscli (1.9.9-2) unstable; urgency=medium
 
   * Refresh patches.
