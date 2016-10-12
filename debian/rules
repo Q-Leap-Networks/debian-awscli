@@ -17,5 +17,7 @@ override_dh_auto_install:
 
 override_dh_fixperms:
 	dh_fixperms
+	chmod -x $(CURDIR)/debian/awscli/usr/share/awscli/awscli/examples/*/*.rst
 	chmod -x $(CURDIR)/debian/awscli/usr/share/zsh/vendor-completions/_awscli
 # override_dh_auto_build:
+

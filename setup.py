@@ -6,10 +6,11 @@ from setuptools import setup, find_packages
 import awscli
 
 
-requires = ['botocore==1.3.23',
-            'colorama>=0.2.5,<=0.3.3',
+requires = ['botocore==1.4.60',
+            'colorama>=0.2.5,<=0.3.7',
             'docutils>=0.10',
-            'rsa>=3.1.2,<=3.3.0']
+            'rsa>=3.1.2,<=3.5.0',
+            's3transfer>=0.1.5,<0.2.0']
 
 
 if sys.version_info[:2] == (2, 6):
@@ -51,6 +52,7 @@ setup_options = dict(
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
     ),
 )
 

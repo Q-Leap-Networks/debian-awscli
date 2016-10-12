@@ -18,10 +18,11 @@ import tempfile
 import contextlib
 from datetime import datetime
 
+from botocore.exceptions import ClientError
+
 from awscli.compat import six
 from awscli.customizations.codedeploy.utils import validate_s3_location
 from awscli.customizations.commands import BasicCommand
-from awscli.errorhandler import ServerError, ClientError
 from awscli.compat import ZIP_COMPRESSION_MODE
 
 
@@ -34,7 +35,7 @@ class Push(BasicCommand):
 
     DESCRIPTION = (
         'Bundles and uploads to Amazon Simple Storage Service (Amazon S3) an '
-        'application revision, which is an archive file that contains '
+        'application revision, which is a zip archive file that contains '
         'deployable content and an accompanying Application Specification '
         'file (AppSpec file). If the upload is successful, a message is '
         'returned that describes how to call the create-deployment command to '
@@ -60,8 +61,8 @@ class Push(BasicCommand):
                 'Required. Information about the location of the application '
                 'revision to be uploaded to Amazon S3. You must specify both '
                 'a bucket and a key that represent the Amazon S3 bucket name '
-                'and the object key name. Use the format '
-                's3://\<bucket\>/\<key\>'
+                'and the object key name. Content will be zipped before '
+                'uploading. Use the format s3://\<bucket\>/\<key\>'
             )
         },
         {
@@ -89,7 +90,7 @@ class Push(BasicCommand):
             'help_text': (
                 'Optional. The location of the deployable content and the '
                 'accompanying AppSpec file on the development machine to be '
-                'bundled and uploaded to Amazon S3. If not specified, the '
+                'zipped and uploaded to Amazon S3. If not specified, the '
                 'current directory is used.'
             )
         },
@@ -107,7 +108,6 @@ class Push(BasicCommand):
 
     def _run_main(self, parsed_args, parsed_globals):
         self._validate_args(parsed_args)
-
         self.codedeploy = self._session.create_client(
             'codedeploy',
             region_name=parsed_globals.region,
@@ -118,7 +118,6 @@ class Push(BasicCommand):
             's3',
             region_name=parsed_globals.region
         )
-
         self._push(parsed_args)
 
     def _validate_args(self, parsed_args):
@@ -143,7 +142,7 @@ class Push(BasicCommand):
         ) as bundle:
             try:
                 upload_response = self._upload_to_s3(params, bundle)
-                params.eTag = upload_response['ETag']
+                params.eTag = upload_response['ETag'].replace('"', "")
                 if 'VersionId' in upload_response:
                     params.version = upload_response['VersionId']
             except Exception as e:
@@ -261,7 +260,7 @@ class Push(BasicCommand):
                 UploadId=upload_id,
                 MultipartUpload={'Parts': multipart_list}
             )
-        except (ServerError, ClientError) as e:
+        except ClientError as e:
             self.s3.abort_multipart_upload(
                 Bucket=params.bucket,
                 Key=params.key,

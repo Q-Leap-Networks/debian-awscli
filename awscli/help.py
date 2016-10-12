@@ -12,6 +12,7 @@
 # language governing permissions and limitations under the License.
 import logging
 import os
+import sys
 import platform
 import shlex
 from subprocess import Popen, PIPE
@@ -28,7 +29,7 @@ from awscli.clidocs import ServiceDocumentEventHandler
 from awscli.clidocs import OperationDocumentEventHandler
 from awscli.clidocs import TopicListerDocumentEventHandler
 from awscli.clidocs import TopicDocumentEventHandler
-from awscli.argprocess import ParamShorthand
+from awscli.argprocess import ParamShorthandParser
 from awscli.argparser import ArgTableArgParser
 from awscli.topictags import TopicTagDB
 from awscli.utils import ignore_ctrl_c
@@ -62,6 +63,8 @@ class PagingHelpRenderer(object):
     a particular platform.
 
     """
+    def __init__(self, output_stream=sys.stdout):
+        self.output_stream = output_stream
 
     PAGER = None
 
@@ -106,7 +109,7 @@ class PosixHelpRenderer(PagingHelpRenderer):
         man_contents = publish_string(contents, writer=manpage.Writer())
         if not self._exists_on_path('groff'):
             raise ExecutableNotFoundError('groff')
-        cmdline = ['groff', '-man', '-T', 'ascii']
+        cmdline = ['groff', '-m', 'man', '-T', 'ascii']
         LOG.debug("Running command: %s", cmdline)
         p3 = self._popen(cmdline, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         groff_output = p3.communicate(input=man_contents)[0]
@@ -114,6 +117,12 @@ class PosixHelpRenderer(PagingHelpRenderer):
 
     def _send_output_to_pager(self, output):
         cmdline = self.get_pager_cmdline()
+        if not self._exists_on_path(cmdline[0]):
+            LOG.debug("Pager '%s' not found in PATH, printing raw help." %
+                      cmdline[0])
+            self.output_stream.write(output.decode('utf-8') + "\n")
+            self.output_stream.flush()
+            return
         LOG.debug("Running command: %s", cmdline)
         with ignore_ctrl_c():
             # We can't rely on the KeyboardInterrupt from
@@ -353,7 +362,7 @@ class OperationHelpCommand(HelpCommand):
     def __init__(self, session, operation_model, arg_table, name,
                  event_class):
         HelpCommand.__init__(self, session, operation_model, None, arg_table)
-        self.param_shorthand = ParamShorthand()
+        self.param_shorthand = ParamShorthandParser()
         self._name = name
         self._event_class = event_class
 

@@ -4,8 +4,6 @@ The following ``describe-commands`` commmand describes the commands in a specifi
 
   aws opsworks --region us-east-1 describe-commands --instance-id 8c2673b9-3fe5-420d-9cfa-78d875ee7687
 
-**Note**: AWS OpsWorks CLI commands should set the region to ``us-east-1`` regardless of the stack's location.
-
 *Output*::
 
   {

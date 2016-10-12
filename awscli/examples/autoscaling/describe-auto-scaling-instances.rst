@@ -6,37 +6,41 @@ This example describes the specified instance::
 
 The following is example output::
 
-  {
-    "AutoScalingInstances": [
-        {
-            "InstanceId": "i-4ba0837f",
-            "HealthStatus": "HEALTHY",
-            "AvailabilityZone": "us-west-2c",
-            "AutoScalingGroupName": "my-asg",
-            "LifecycleState": "InService"
-        }
-    ]
-  }
+    {
+        "AutoScalingInstances": [
+            {
+                "ProtectedFromScaleIn": false,
+                "AvailabilityZone": "us-west-2c",
+                "InstanceId": "i-4ba0837f",
+                "AutoScalingGroupName": "my-auto-scaling-group",
+                "HealthStatus": "HEALTHY",
+                "LifecycleState": "InService",
+                "LaunchConfigurationName": "my-launch-config"
+            }
+        ]
+    }
 
 This example uses the ``max-items`` parameter to specify how many instances to return with this call::
 
-	aws autoscaling describe-auto-scaling-instances --max-items 1
+    aws autoscaling describe-auto-scaling-instances --max-items 1
 
 The following is example output::
 
-  {
-    "NextToken": "None___1",
-    "AutoScalingInstances": [
-        {
-            "InstanceId": "i-4ba0837f",
-            "HealthStatus": "HEALTHY",
-            "AvailabilityZone": "us-west-2c",
-            "AutoScalingGroupName": "my-asg",
-            "LifecycleState": "InService"
-        }
-    ]
-  }
+    {
+        "NextToken": "Z3M3LMPEXAMPLE",
+        "AutoScalingInstances": [
+            {
+                "ProtectedFromScaleIn": false,
+                "AvailabilityZone": "us-west-2c",
+                "InstanceId": "i-4ba0837f",
+                "AutoScalingGroupName": "my-auto-scaling-group",
+                "HealthStatus": "HEALTHY",
+                "LifecycleState": "InService",
+                "LaunchConfigurationName": "my-launch-config"
+            }
+        ]
+    }
 
-Notice that the output for this command includes a ``NextToken`` field, which indicates that there are more instances. You can use the value of this field with the ``starting-token`` parameter as follows to return additional instances::
+If the output includes a ``NextToken`` field, there are more instances. To get the additional instances, use the value of this field with the ``starting-token`` parameter in a subsequent call as follows::
 
-    aws autoscaling describe-auto-scaling-instances --starting-token None___1
+    aws autoscaling describe-auto-scaling-instances --starting-token Z3M3LMPEXAMPLE

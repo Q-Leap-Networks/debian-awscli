@@ -13,7 +13,7 @@ Build-Depends-Indep: python3-six
         , python3-bcdoc
         , python3-pyasn1
         , python3-rsa
-Standards-Version: 3.9.6
+Standards-Version: 3.9.8
 Homepage: http://aws.amazon.com/cli/
 Vcs-Svn: svn://anonscm.debian.org/python-apps/packages/awscli/trunk/
 Vcs-Browser: http://anonscm.debian.org/viewvc/python-apps/packages/awscli/trunk/
