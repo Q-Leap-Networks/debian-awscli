@@ -36,7 +36,6 @@ from awscli.customizations.sessendemail import register_ses_send_email
 from awscli.customizations.iamvirtmfa import IAMVMFAWrapper
 from awscli.customizations.argrename import register_arg_renames
 from awscli.customizations.dryrundocs import register_dryrun_docs
-from awscli.customizations.route53resourceid import register_resource_id
 from awscli.customizations.configure import register_configure_cmd
 from awscli.customizations.cloudtrail import initialize as cloudtrail_init
 from awscli.customizations.toplevelbool import register_bool_params
@@ -51,6 +50,15 @@ from awscli.customizations.s3errormsg import register_s3_error_msg
 from awscli.customizations.cliinputjson import register_cli_input_json
 from awscli.customizations.generatecliskeleton import \
     register_generate_cli_skeleton
+from awscli.customizations.assumerole import register_assume_role_provider
+from awscli.customizations.waiters import register_add_waiters
+from awscli.customizations.codedeploy import initialize as codedeploy_init
+from awscli.customizations.configservice.subscribe import register_subscribe
+from awscli.customizations.configservice.getstatus import register_get_status
+from awscli.customizations.configservice.rename_cmd import \
+    register_rename_config
+from awscli.customizations.scalarparse import register_scalar_parser
+from awscli.customizations.opsworks import initialize as opsworks_init
 
 
 def awscli_initialize(event_handlers):
@@ -74,7 +82,7 @@ def awscli_initialize(event_handlers):
     event_handlers.register('doc-examples.*.*',
                             add_examples)
     register_cli_input_json(event_handlers)
-    event_handlers.register('building-argument-table.s3api.*',
+    event_handlers.register('building-argument-table.*',
                             add_streaming_output_arg)
     event_handlers.register('building-argument-table.ec2.run-instances',
                             ec2_add_count)
@@ -94,7 +102,6 @@ def awscli_initialize(event_handlers):
     IAMVMFAWrapper(event_handlers)
     register_arg_renames(event_handlers)
     register_dryrun_docs(event_handlers)
-    register_resource_id(event_handlers)
     register_configure_cmd(event_handlers)
     cloudtrail_init(event_handlers)
     register_bool_params(event_handlers)
@@ -105,3 +112,11 @@ def awscli_initialize(event_handlers):
     register_cloudsearchdomain(event_handlers)
     register_s3_endpoint(event_handlers)
     register_generate_cli_skeleton(event_handlers)
+    register_assume_role_provider(event_handlers)
+    register_add_waiters(event_handlers)
+    codedeploy_init(event_handlers)
+    register_subscribe(event_handlers)
+    register_get_status(event_handlers)
+    register_rename_config(event_handlers)
+    register_scalar_parser(event_handlers)
+    opsworks_init(event_handlers)

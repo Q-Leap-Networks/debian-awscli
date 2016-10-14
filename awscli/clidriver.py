@@ -43,17 +43,6 @@ LOG = logging.getLogger('awscli.clidriver')
 LOG_FORMAT = (
     '%(asctime)s - %(threadName)s - %(name)s - %(levelname)s - %(message)s')
 
-# NOTE: this is temporary.
-# Botocore now parsers timestamps to datetime.datetime objects.
-# The AWS CLI has historically not parsed timestamp objects and treated
-# them as strings.
-# We will eventually want to allow for users to specify how to parse
-# the timestamp formats, but for now, we set the default timestamp parser
-# to be a noop.
-# The eventual plan is to add a client option for providing a timestamp parser,
-# and once the CLI has switched over to client objects we can remove this
-# and set the timestamp parsing on a per client basis.
-parsers.DEFAULT_TIMESTAMP_PARSER = lambda x: x
 
 
 def main():
@@ -117,7 +106,8 @@ class CLIDriver(object):
         command_table = self._build_builtin_commands(self.session)
         self.session.emit('building-command-table.main',
                           command_table=command_table,
-                          session=self.session)
+                          session=self.session,
+                          command_object=self)
         return command_table
 
     def _build_builtin_commands(self, session):
@@ -203,6 +193,7 @@ class CLIDriver(object):
             # general exception handling logic as calling into the
             # command table.  This is why it's in the try/except clause.
             self._handle_top_level_args(parsed_args)
+            self._emit_session_event()
             return command_table[parsed_args.command](remaining, parsed_args)
         except UnknownArgumentError as e:
             sys.stderr.write("\n")
@@ -224,6 +215,14 @@ class CLIDriver(object):
             sys.stderr.write("\n")
             sys.stderr.write("%s\n" % e)
             return 255
+
+    def _emit_session_event(self):
+        # This event is guaranteed to run after the session has been
+        # initialized and a profile has been set.  This was previously
+        # problematic because if something in CLIDriver caused the
+        # session components to be reset (such as session.profile = foo)
+        # then all the prior registered components would be removed.
+        self.session.emit('session-initialized', session=self.session)
 
     def _show_error(self, msg):
         LOG.debug(msg, exc_info=True)
@@ -334,6 +333,10 @@ class ServiceCommand(CLICommand):
     def name(self, value):
         self._name = value
 
+    @property
+    def service_object(self):
+        return self._service_object
+
     def _get_command_table(self):
         if self._command_table is None:
             self._command_table = self._create_command_table()
@@ -366,7 +369,8 @@ class ServiceCommand(CLICommand):
                 service_object=service_object)
         self.session.emit('building-command-table.%s' % self._name,
                           command_table=command_table,
-                          session=self.session)
+                          session=self.session,
+                          command_object=self)
         return command_table
 
     def create_help_command(self):
