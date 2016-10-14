@@ -98,7 +98,9 @@ class CreateCluster(Command):
          'help_text': helptext.ADDITIONAL_INFO},
         {'name': 'restore-from-hbase-backup',
          'schema': argumentschema.HBASE_RESTORE_FROM_BACKUP_SCHEMA,
-         'help_text': helptext.RESTORE_FROM_HBASE}
+         'help_text': helptext.RESTORE_FROM_HBASE},
+        {'name': 'security-configuration',
+         'help_text': helptext.SECURITY_CONFIG}
     ]
     SYNOPSIS = BasicCommand.FROM_FILE('emr', 'create-cluster-synopsis.rst')
     EXAMPLES = BasicCommand.FROM_FILE('emr', 'create-cluster-examples.rst')
@@ -266,6 +268,10 @@ class CreateCluster(Command):
                 release_label=parsed_args.release_label)
             self._update_cluster_dict(
                 cluster=params, key='Steps', value=steps_list)
+
+        if parsed_args.security_configuration is not None:
+            emrutils.apply_dict(
+                params, 'SecurityConfiguration', parsed_args.security_configuration)
 
         self._validate_required_applications(parsed_args)
 
@@ -451,8 +457,8 @@ class CreateCluster(Command):
                                                 parsed_args, parsed_configs):
         if parsed_args.use_default_roles:
             configurations = [x for x in configurations
-                              if x.name is not 'service_role'
-                              and x.name is not 'instance_profile']
+                              if x.name is not 'service_role' and
+                              x.name is not 'instance_profile']
         return configurations
 
     def _handle_emrfs_parameters(self, cluster, emrfs_args, release_label):

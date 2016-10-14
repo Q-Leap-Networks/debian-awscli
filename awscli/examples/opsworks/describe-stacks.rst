@@ -4,8 +4,6 @@ The following ``describe-stacks`` command describes an account's stacks. ::
 
   aws opsworks --region us-east-1 describe-stacks
 
-**Note**: AWS OpsWorks CLI commands should set the region to us-east-1 regardless of the stack's location.
-
 *Output*::
 
   {

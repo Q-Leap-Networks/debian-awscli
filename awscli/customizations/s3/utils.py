@@ -11,6 +11,7 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import argparse
+import logging
 from datetime import datetime
 import mimetypes
 import hashlib
@@ -18,17 +19,19 @@ import math
 import errno
 import os
 import sys
+import time
 from collections import namedtuple, deque
 from functools import partial
 
 from dateutil.parser import parse
 from dateutil.tz import tzlocal, tzutc
 from botocore.compat import unquote_str
+from s3transfer.subscribers import BaseSubscriber
 
-from awscli.compat import six
-from awscli.compat import PY3
+from awscli.compat import bytes_print
 from awscli.compat import queue
 
+LOGGER = logging.getLogger(__name__)
 HUMANIZE_SUFFIXES = ('KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB')
 MAX_PARTS = 10000
 EPOCH_TIME = datetime(1970, 1, 1, tzinfo=tzutc())
@@ -36,6 +39,10 @@ EPOCH_TIME = datetime(1970, 1, 1, tzinfo=tzutc())
 # See: http://docs.aws.amazon.com/AmazonS3/latest/dev/UploadingObjects.html
 # and: http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
 MAX_SINGLE_UPLOAD_SIZE = 5 * (1024 ** 3)
+MIN_UPLOAD_CHUNKSIZE = 5 * (1024 ** 2)
+# Maximum object size allowed in S3.
+# See: http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
+MAX_UPLOAD_SIZE = 5 * (1024 ** 4)
 SIZE_SUFFIX = {
     'kb': 1024,
     'mb': 1024 ** 2,
@@ -139,6 +146,10 @@ class MD5Error(Exception):
     pass
 
 
+class CreateDirectoryError(Exception):
+    pass
+
+
 class StablePriorityQueue(queue.Queue):
     """Priority queue that maintains FIFO order for same priority items.
 
@@ -223,7 +234,7 @@ def get_file_stat(path):
 
     try:
         update_time = datetime.fromtimestamp(stats.st_mtime, tzlocal())
-    except ValueError:
+    except (ValueError, OSError):
         # Python's fromtimestamp raises value errors when the timestamp is out
         # of range of the platform's C localtime() function. This can cause
         # issues when syncing from systems with a wide range of valid timestamps
@@ -271,27 +282,80 @@ def create_warning(path, error_message, skip_file=True):
     if skip_file:
         print_string = print_string + "Skipping file " + path + ". "
     print_string = print_string + error_message
-    warning_message = PrintTask(message=print_string, error=False,
-                                warning=True)
+    warning_message = WarningResult(message=print_string, error=False,
+                                    warning=True)
     return warning_message
 
 
 def find_chunksize(size, current_chunksize):
     """
-    The purpose of this function is determine a chunksize so that
-    the number of parts in a multipart upload is not greater than
-    the ``MAX_PARTS``.  If the ``chunksize`` is greater than
-    ``MAX_SINGLE_UPLOAD_SIZE`` it returns ``MAX_SINGLE_UPLOAD_SIZE``.
+    The purpose of this function is determine a chunksize so that the number of
+    parts in a multipart upload is not greater than the ``MAX_PARTS``, and that
+    the chunksize is not less than the minimum chunksize.
+
+    :param size: The size of the file to upload
+    :param current_chunksize: The currently configured chunksize
+    :return: If the given chunksize is valid, it is returned. Otherwise a valid
+        chunksize is calculated and returned.
+    :raises: ValueError: if the file size exceeds the max size of 5TB
+    """
+    if size > MAX_UPLOAD_SIZE:
+        raise ValueError("File size exceeds maximum upload size.")
+    size = adjust_chunksize_for_max_parts(size, current_chunksize)
+    return adjust_chunksize_to_upload_limits(size)
+
+
+def adjust_chunksize_to_upload_limits(current_chunksize):
+    """
+    Given a chunksize, verifies that the chunksize is within max and min
+    chunksize for uploads. If it is not, a valid chunksize will be returned.
+
+    :param current_chunksize: The current configured chunksize.
+    :return: If the given chunksize is valid, it is returned. Otherwise a valid
+        chunksize, which is a close to the given as possible, is returned.
+    """
+    chunksize = current_chunksize
+    chunksize_human = human_readable_size(chunksize)
+    if chunksize > MAX_SINGLE_UPLOAD_SIZE:
+        LOGGER.debug(
+            "Chunksize greater than maximum chunksize. Setting to %s from %s."
+            % (human_readable_size(MAX_SINGLE_UPLOAD_SIZE), chunksize_human))
+        return MAX_SINGLE_UPLOAD_SIZE
+    elif chunksize < MIN_UPLOAD_CHUNKSIZE:
+        LOGGER.debug(
+            "Chunksize less than minimum chunksize. Setting to %s from %s." %
+            (human_readable_size(MIN_UPLOAD_CHUNKSIZE), chunksize_human))
+        return MIN_UPLOAD_CHUNKSIZE
+    else:
+        return chunksize
+
+
+def adjust_chunksize_for_max_parts(size, current_chunksize):
+    """
+    Given a chunksize and file size, verifies that the upload will not exceed
+    the maximum parts for a multipart upload. If it will, a valid chunksize
+    is calculated and returned.
+
+    :param size: The size of the file to upload
+    :param current_chunksize: The currently configured chunksize
+    :return: If the given chunksize is valid, it is returned. Otherwise a valid
+        chunksize is calculated and returned.
     """
     chunksize = current_chunksize
     num_parts = int(math.ceil(size / float(chunksize)))
+
     while num_parts > MAX_PARTS:
         chunksize *= 2
         num_parts = int(math.ceil(size / float(chunksize)))
-    if chunksize > MAX_SINGLE_UPLOAD_SIZE:
-        return MAX_SINGLE_UPLOAD_SIZE
-    else:
-        return chunksize
+
+    if chunksize != current_chunksize:
+        chunksize_human = human_readable_size(chunksize)
+        LOGGER.debug(
+            "Chunksize would result in the number of parts exceeding the "
+            "maximum. Setting to %s from %s." %
+            (chunksize_human, human_readable_size(current_chunksize)))
+
+    return chunksize
 
 
 class MultiCounter(object):
@@ -337,25 +401,31 @@ def uni_print(statement, out_file=None):
         # we want to pick an encoding that has the highest
         # chance of printing successfully.
         new_encoding = getattr(out_file, 'encoding', 'ascii')
+        # When the output of the aws command is being piped,
+        # ``sys.stdout.encoding`` is ``None``.
+        if new_encoding is None:
+            new_encoding = 'ascii'
         new_statement = statement.encode(
             new_encoding, 'replace').decode(new_encoding)
         out_file.write(new_statement)
     out_file.flush()
 
 
-def bytes_print(statement):
+class StdoutBytesWriter(object):
     """
-    This function is used to properly write bytes to standard out.
+    This class acts as a file-like object that performs the bytes_print
+    function on write.
     """
-    if PY3:
-        if getattr(sys.stdout, 'buffer', None):
-            sys.stdout.buffer.write(statement)
-        else:
-            # If it is not possible to write to the standard out buffer.
-            # The next best option is to decode and write to standard out.
-            sys.stdout.write(statement.decode('utf-8'))
-    else:
-        sys.stdout.write(statement)
+    def __init__(self, stdout=None):
+        self._stdout = stdout
+
+    def write(self, b):
+        """
+        Writes data to stdout as bytes.
+
+        :param b: data to write
+        """
+        bytes_print(b, self._stdout)
 
 
 def guess_content_type(filename):
@@ -363,7 +433,21 @@ def guess_content_type(filename):
 
     If the type cannot be guessed, a value of None is returned.
     """
-    return mimetypes.guess_type(filename)[0]
+    try:
+        return mimetypes.guess_type(filename)[0]
+    # This catches a bug in the mimetype libary where some MIME types
+    # specifically on windows machines cause a UnicodeDecodeError
+    # because the MIME type in the Windows registery has an encoding
+    # that cannot be properly encoded using the default system encoding.
+    # https://bugs.python.org/issue9291
+    #
+    # So instead of hard failing, just log the issue and fall back to the
+    # default guessed content type of None.
+    except UnicodeDecodeError:
+        LOGGER.debug(
+            'Unable to guess content type for %s due to '
+            'UnicodeDecodeError: ', filename, exc_info=True
+        )
 
 
 def relative_path(filename, start=os.path.curdir):
@@ -505,6 +589,7 @@ class PrintTask(namedtuple('PrintTask',
         return super(PrintTask, cls).__new__(cls, message, error, total_parts,
                                              warning)
 
+WarningResult = PrintTask
 
 IORequest = namedtuple('IORequest',
                        ['filename', 'offset', 'data', 'is_stream'])
@@ -681,3 +766,126 @@ class RequestParamsMapper(object):
                                                   cli_params):
         cls._set_sse_c_request_params(request_params, cli_params)
         cls._set_sse_c_copy_source_request_params(request_params, cli_params)
+
+
+class ProvideSizeSubscriber(BaseSubscriber):
+    """
+    A subscriber which provides the transfer size before it's queued.
+    """
+    def __init__(self, size):
+        self.size = size
+
+    def on_queued(self, future, **kwargs):
+        future.meta.provide_transfer_size(self.size)
+
+
+# TODO: Eventually port this down to the BaseSubscriber or a new subscriber
+# class in s3transfer. The functionality is very convenient but may need
+# some further design decisions to make it a feature in s3transfer.
+class OnDoneFilteredSubscriber(BaseSubscriber):
+    """Subscriber that differentiates between successes and failures
+
+    It is really a convenience class so developers do not have to have
+    to constantly remember to have a general try/except around future.result()
+    """
+    def on_done(self, future, **kwargs):
+        future_exception = None
+        try:
+
+            future.result()
+        except Exception as e:
+            future_exception = e
+        # If the result propogates an error, call the on_failure
+        # method instead.
+        if future_exception:
+            self._on_failure(future, future_exception)
+        else:
+            self._on_success(future)
+
+    def _on_success(self, future):
+        pass
+
+    def _on_failure(self, future, e):
+        pass
+
+
+class BaseProvideContentTypeSubscriber(BaseSubscriber):
+    """A subscriber that provides content type when creating s3 objects"""
+
+    def on_queued(self, future, **kwargs):
+        guessed_type = guess_content_type(self._get_filename(future))
+        if guessed_type is not None:
+            future.meta.call_args.extra_args['ContentType'] = guessed_type
+
+    def _get_filename(self, future):
+        raise NotImplementedError('_get_filename()')
+
+
+class ProvideUploadContentTypeSubscriber(BaseProvideContentTypeSubscriber):
+    def _get_filename(self, future):
+        return future.meta.call_args.fileobj
+
+
+class ProvideCopyContentTypeSubscriber(BaseProvideContentTypeSubscriber):
+    def _get_filename(self, future):
+        return future.meta.call_args.copy_source['Key']
+
+
+class ProvideLastModifiedTimeSubscriber(OnDoneFilteredSubscriber):
+    """Sets utime for a downloaded file"""
+    def __init__(self, last_modified_time, result_queue):
+        self._last_modified_time = last_modified_time
+        self._result_queue = result_queue
+
+    def _on_success(self, future, **kwargs):
+        filename = future.meta.call_args.fileobj
+        try:
+            last_update_tuple = self._last_modified_time.timetuple()
+            mod_timestamp = time.mktime(last_update_tuple)
+            set_file_utime(filename, int(mod_timestamp))
+        except Exception as e:
+            warning_message = (
+                'Successfully Downloaded %s but was unable to update the '
+                'last modified time. %s' % (filename, e))
+            self._result_queue.put(create_warning(filename, warning_message))
+
+
+class DirectoryCreatorSubscriber(BaseSubscriber):
+    """Creates a directory to download if it does not exist"""
+    def on_queued(self, future, **kwargs):
+        d = os.path.dirname(future.meta.call_args.fileobj)
+        try:
+            if not os.path.exists(d):
+                os.makedirs(d)
+        except OSError as e:
+            if not e.errno == errno.EEXIST:
+                raise CreateDirectoryError(
+                    "Could not create directory %s: %s" % (d, e))
+
+
+class NonSeekableStream(object):
+    """Wrap a file like object as a non seekable stream.
+
+    This class is used to wrap an existing file like object
+    such that it only has a ``.read()`` method.
+
+    There are some file like objects that aren't truly seekable
+    but appear to be.  For example, on windows, sys.stdin has
+    a ``seek()`` method, and calling ``seek(0)`` even appears
+    to work.  However, subsequent ``.read()`` calls will just
+    return an empty string.
+
+    Consumers of these file like object have no way of knowing
+    if these files are truly seekable or not, so this class
+    can be used to force non-seekable behavior when you know
+    for certain that a fileobj is non seekable.
+
+    """
+    def __init__(self, fileobj):
+        self._fileobj = fileobj
+
+    def read(self, amt=None):
+        if amt is None:
+            return self._fileobj.read()
+        else:
+            return self._fileobj.read(amt)

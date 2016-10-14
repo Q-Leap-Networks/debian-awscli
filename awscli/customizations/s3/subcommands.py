@@ -11,6 +11,7 @@
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import os
+import logging
 import sys
 
 from botocore.client import Config
@@ -24,15 +25,19 @@ from awscli.customizations.s3.comparator import Comparator
 from awscli.customizations.s3.fileinfobuilder import FileInfoBuilder
 from awscli.customizations.s3.fileformat import FileFormat
 from awscli.customizations.s3.filegenerator import FileGenerator
-from awscli.customizations.s3.fileinfo import TaskInfo, FileInfo
+from awscli.customizations.s3.fileinfo import FileInfo
 from awscli.customizations.s3.filters import create_filter
-from awscli.customizations.s3.s3handler import S3Handler, S3StreamHandler
+from awscli.customizations.s3.s3handler import S3Handler
+from awscli.customizations.s3.s3handler import S3TransferHandlerFactory
 from awscli.customizations.s3.utils import find_bucket_key, uni_print, \
     AppendFilter, find_dest_path_comp_key, human_readable_size, \
-    RequestParamsMapper
+    RequestParamsMapper, split_s3_bucket_key
 from awscli.customizations.s3.syncstrategy.base import MissingFileSync, \
     SizeAndLastModifiedSync, NeverSync
 from awscli.customizations.s3 import transferconfig
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 RECURSIVE = {'name': 'recursive', 'action': 'store_true', 'dest': 'dir_op',
@@ -123,7 +128,7 @@ INCLUDE = {'name': 'include', 'action': AppendFilter, 'nargs': 1,
 
 ACL = {'name': 'acl',
        'choices': ['private', 'public-read', 'public-read-write',
-                   'authenticated-read', 'bucket-owner-read',
+                   'authenticated-read', 'aws-exec-read', 'bucket-owner-read',
                    'bucket-owner-full-control', 'log-delivery-write'],
        'help_text': (
            "Sets the ACL for the object when the command is "
@@ -131,7 +136,7 @@ ACL = {'name': 'acl',
            '"s3:PutObjectAcl" permission included in the list of actions '
            "for your IAM policy. "
            "Only accepts values of ``private``, ``public-read``, "
-           "``public-read-write``, ``authenticated-read``, "
+           "``public-read-write``, ``authenticated-read``, ``aws-exec-read``, "
            "``bucket-owner-read``, ``bucket-owner-full-control`` and "
            "``log-delivery-write``. "
            'See <a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/'
@@ -154,7 +159,7 @@ GRANTS = {
         'writeacl, or full.</li><li><code>Grantee_Type</code> - '
         'Specifies how the grantee is to be identified, and can be set '
         'to uri, emailaddress, or id.</li><li><code>Grantee_ID</code> - '
-        'Specifies the grantee based on Grantee_Type.</li></ul>The '
+        'Specifies the grantee based on Grantee_Type. The '
         '<code>Grantee_ID</code> value can be one of:<ul><li><b>uri</b> '
         '- The group\'s URI. For more information, see '
         '<a href="http://docs.aws.amazon.com/AmazonS3/latest/dev/'
@@ -186,7 +191,7 @@ SSE_C = {
         'of the the object in S3. ``AES256`` is the only valid value. '
         'If the parameter is specified but no value is provided, '
         '``AES256`` is used. If you provide this value, ``--sse-c-key`` '
-        'be specfied as well.'
+        'must be specfied as well.'
     )
 }
 
@@ -196,7 +201,8 @@ SSE_C_KEY = {
     'help_text': (
         'The customer-provided encryption key to use to server-side '
         'encrypt the object in S3. If you provide this value, '
-        '``--sse-c`` be specfied as well.'
+        '``--sse-c`` must be specfied as well. The key provided should '
+        '**not** be base64 encoded.'
     )
 }
 
@@ -222,7 +228,7 @@ SSE_C_COPY_SOURCE = {
         'object. ``AES256`` is the only valid '
         'value. If the parameter is specified but no value is provided, '
         '``AES256`` is used. If you provide this value, '
-        '``--sse-c-copy-source-key`` be specfied as well. '
+        '``--sse-c-copy-source-key`` must be specfied as well. '
     )
 }
 
@@ -236,7 +242,7 @@ SSE_C_COPY_SOURCE_KEY = {
         'to use to decrypt the source object. The encryption key provided '
         'must be one that was used when the source object was created. '
         'If you provide this value, ``--sse-c-copy-source`` be specfied as '
-        'well.'
+        'well. The key provided should **not** be base64 encoded.'
     )
 }
 
@@ -310,9 +316,9 @@ METADATA = {
     },
     'help_text': (
         "A map of metadata to store with the objects in S3. This will be "
-        "applied to every object which is part of this request. In a sync, this"
-        "means that files which haven't changed won't receive the new metadata."
-        " When copying between two s3 locations, the metadata-directive "
+        "applied to every object which is part of this request. In a sync, this "
+        "means that files which haven't changed won't receive the new metadata. "
+        "When copying between two s3 locations, the metadata-directive "
         "argument will default to 'REPLACE' unless otherwise specified."
     )
 }
@@ -333,7 +339,7 @@ METADATA_DIRECTIVE = {
         ' specified by the CLI command. Note that if you are '
         'using any of the following parameters: ``--content-type``, '
         '``content-language``, ``--content-encoding``, '
-        '``--content-disposition``, ``-cache-control``, or ``--expires``, you '
+        '``--content-disposition``, ``--cache-control``, or ``--expires``, you '
         'will need to specify ``--metadata-directive REPLACE`` for '
         'non-multipart copies if you want the copied objects to have the '
         'specified metadata values.')
@@ -369,7 +375,7 @@ EXPECTED_SIZE = {'name': 'expected-size',
                      'in terms of bytes. Note that this argument is needed '
                      'only when a stream is being uploaded to s3 and the size '
                      'is larger than 5GB.  Failure to include this argument '
-                     'under these conditions may result in a failed upload. '
+                     'under these conditions may result in a failed upload '
                      'due to too many parts in upload.')}
 
 
@@ -383,13 +389,34 @@ PAGE_SIZE = {'name': 'page-size', 'cli_type_name': 'integer',
 IGNORE_GLACIER_WARNINGS = {
     'name': 'ignore-glacier-warnings', 'action': 'store_true',
     'help_text': (
-        'Turns off glacier warnings. Warnings about operations that cannot '
+        'Turns off glacier warnings. Warnings about an operation that cannot '
         'be performed because it involves copying, downloading, or moving '
         'a glacier object will no longer be printed to standard error and '
         'will no longer cause the return code of the command to be ``2``.'
     )
 }
 
+
+FORCE_GLACIER_TRANSFER = {
+    'name': 'force-glacier-transfer', 'action': 'store_true',
+    'help_text': (
+        'Forces a transfer request on all Glacier objects in a sync or '
+        'recursive copy.'
+    )
+}
+
+REQUEST_PAYER = {
+    'name': 'request-payer', 'choices': ['requester'],
+    'nargs': '?', 'const': 'requester',
+    'help_text': (
+        'Confirms that the requester knows that she or he will be charged '
+        'for the request. Bucket owners need not specify this parameter in '
+        'their requests. Documentation on downloading objects from requester '
+        'pays buckets can be found at '
+        'http://docs.aws.amazon.com/AmazonS3/latest/dev/'
+        'ObjectsinRequesterPaysBuckets.html'
+    )
+}
 
 TRANSFER_ARGS = [DRYRUN, QUIET, INCLUDE, EXCLUDE, ACL,
                  FOLLOW_SYMLINKS, NO_FOLLOW_SYMLINKS, NO_GUESS_MIME_TYPE,
@@ -398,7 +425,7 @@ TRANSFER_ARGS = [DRYRUN, QUIET, INCLUDE, EXCLUDE, ACL,
                  WEBSITE_REDIRECT, CONTENT_TYPE, CACHE_CONTROL,
                  CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LANGUAGE,
                  EXPIRES, SOURCE_REGION, ONLY_SHOW_ERRORS,
-                 PAGE_SIZE, IGNORE_GLACIER_WARNINGS]
+                 PAGE_SIZE, IGNORE_GLACIER_WARNINGS, FORCE_GLACIER_TRANSFER]
 
 
 def get_client(session, region, endpoint_url, verify, config=None):
@@ -417,12 +444,12 @@ class S3Command(BasicCommand):
 class ListCommand(S3Command):
     NAME = 'ls'
     DESCRIPTION = ("List S3 objects and common prefixes under a prefix or "
-                   "all S3 buckets. Note that the --output argument "
-                   "is ignored for this command.")
+                   "all S3 buckets. Note that the --output and --no-paginate "
+                   "arguments are ignored for this command.")
     USAGE = "<S3Uri> or NONE"
     ARG_TABLE = [{'name': 'paths', 'nargs': '?', 'default': 's3://',
                   'positional_arg': True, 'synopsis': USAGE}, RECURSIVE,
-                 PAGE_SIZE, HUMAN_READABLE, SUMMARIZE]
+                 PAGE_SIZE, HUMAN_READABLE, SUMMARIZE, REQUEST_PAYER]
 
     def _run_main(self, parsed_args, parsed_globals):
         super(ListCommand, self)._run_main(parsed_args, parsed_globals)
@@ -439,10 +466,11 @@ class ListCommand(S3Command):
             self._list_all_buckets()
         elif parsed_args.dir_op:
             # Then --recursive was specified.
-            self._list_all_objects_recursive(bucket, key,
-                                             parsed_args.page_size)
+            self._list_all_objects_recursive(
+                bucket, key, parsed_args.page_size, parsed_args.request_payer)
         else:
-            self._list_all_objects(bucket, key, parsed_args.page_size)
+            self._list_all_objects(
+                bucket, key, parsed_args.page_size, parsed_args.request_payer)
         if parsed_args.summarize:
             self._print_summary()
         if key:
@@ -459,11 +487,16 @@ class ListCommand(S3Command):
             # thrown before reaching the automatic return of rc of zero.
             return 0
 
-    def _list_all_objects(self, bucket, key, page_size=None):
+    def _list_all_objects(self, bucket, key, page_size=None,
+                          request_payer=None):
         paginator = self.client.get_paginator('list_objects')
-        iterator = paginator.paginate(Bucket=bucket,
-                                      Prefix=key, Delimiter='/',
-                                      PaginationConfig={'PageSize': page_size})
+        paging_args = {
+            'Bucket': bucket, 'Prefix': key, 'Delimiter': '/',
+            'PaginationConfig': {'PageSize': page_size}
+        }
+        if request_payer is not None:
+            paging_args['RequestPayer'] = request_payer
+        iterator = paginator.paginate(**paging_args)
         for response_data in iterator:
             self._display_page(response_data)
 
@@ -502,11 +535,16 @@ class ListCommand(S3Command):
             print_str = last_mod_str + ' ' + bucket['Name'] + '\n'
             uni_print(print_str)
 
-    def _list_all_objects_recursive(self, bucket, key, page_size=None):
+    def _list_all_objects_recursive(self, bucket, key, page_size=None,
+                                    request_payer=None):
         paginator = self.client.get_paginator('list_objects')
-        iterator = paginator.paginate(Bucket=bucket,
-                                      Prefix=key,
-                                      PaginationConfig={'PageSize': page_size})
+        paging_args = {
+            'Bucket': bucket, 'Prefix': key,
+            'PaginationConfig': {'PageSize': page_size}
+        }
+        if request_payer is not None:
+            paging_args['RequestPayer'] = request_payer
+        iterator = paginator.paginate(**paging_args)
         for response_data in iterator:
             self._display_page(response_data, use_basename=False)
 
@@ -594,6 +632,36 @@ class WebsiteCommand(S3Command):
         return path
 
 
+class PresignCommand(S3Command):
+    NAME = 'presign'
+    DESCRIPTION = ("Generate a pre-signed URL for an Amazon S3 object. "
+                   "This allows anyone who receives the pre-signed URL "
+                   "to retrieve the S3 object with an HTTP GET request.")
+    USAGE = "<S3Uri>"
+    ARG_TABLE = [{'name': 'path',
+                  'positional_arg': True, 'synopsis': USAGE},
+                 {'name': 'expires-in', 'default': 3600,
+                  'cli_type_name': 'integer',
+                  'help_text': (
+                      'Number of seconds until the pre-signed '
+                      'URL expires.  Default is 3600 seconds.')}]
+
+    def _run_main(self, parsed_args, parsed_globals):
+        super(PresignCommand, self)._run_main(parsed_args, parsed_globals)
+        path = parsed_args.path
+        if path.startswith('s3://'):
+            path = path[5:]
+        bucket, key = find_bucket_key(path)
+        url = self.client.generate_presigned_url(
+            'get_object',
+            {'Bucket': bucket, 'Key': key},
+            ExpiresIn=parsed_args.expires_in
+        )
+        uni_print(url)
+        uni_print('\n')
+        return 0
+
+
 class S3TransferCommand(S3Command):
     def _run_main(self, parsed_args, parsed_globals):
         super(S3TransferCommand, self)._run_main(parsed_args, parsed_globals)
@@ -606,7 +674,6 @@ class S3TransferCommand(S3Command):
         cmd_params.add_verify_ssl(parsed_globals)
         cmd_params.add_page_size(parsed_args)
         cmd_params.add_paths(parsed_args.paths)
-        self._handle_rm_force(parsed_globals, cmd_params.parameters)
 
         runtime_config = transferconfig.RuntimeConfig().build_config(
             **self._session.get_scoped_config().get('s3', {}))
@@ -636,30 +703,6 @@ class S3TransferCommand(S3Command):
                 enc_path = dec_path.encode('utf-8')
                 new_path = enc_path.decode('utf-8')
                 parsed_args.paths[i] = new_path
-
-    def _handle_rm_force(self, parsed_globals, parameters):
-        """
-        This function recursively deletes objects in a bucket if the force
-        parameter was thrown when using the remove bucket command. It will
-        refuse to delete if a key is specified in the s3path.
-        """
-        # XXX: This shouldn't really be here.  This was originally moved from
-        # the CommandParameters class to here, but this is still not the ideal
-        # place for this code.  This should be moved
-        # to either the CommandArchitecture class, or the RbCommand class where
-        # the actual operations against S3 are performed.  This may require
-        # some refactoring though to move this to either of those classes.
-        # For now, moving this out of CommandParameters allows for that class
-        # to be kept simple.
-        if 'force' in parameters:
-            if parameters['force']:
-                bucket, key = find_bucket_key(parameters['src'][5:])
-                if key:
-                    raise ValueError('Please specify a valid bucket name only.'
-                                     ' E.g. s3://%s' % bucket)
-                path = 's3://' + bucket
-                del_objects = RmCommand(self._session)
-                del_objects([path, '--recursive'], parsed_globals)
 
 
 class CpCommand(S3TransferCommand):
@@ -705,15 +748,38 @@ class SyncCommand(S3TransferCommand):
                 [METADATA, METADATA_DIRECTIVE]
 
 
-class MbCommand(S3TransferCommand):
+class MbCommand(S3Command):
     NAME = 'mb'
     DESCRIPTION = "Creates an S3 bucket."
     USAGE = "<S3Uri>"
-    ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
-                  'synopsis': USAGE}]
+    ARG_TABLE = [{'name': 'path', 'positional_arg': True, 'synopsis': USAGE}]
+
+    def _run_main(self, parsed_args, parsed_globals):
+        super(MbCommand, self)._run_main(parsed_args, parsed_globals)
+
+        if not parsed_args.path.startswith('s3://'):
+            raise TypeError("%s\nError: Invalid argument type" % self.USAGE)
+        bucket, _ = split_s3_bucket_key(parsed_args.path)
+
+        bucket_config = {'LocationConstraint': self.client.meta.region_name}
+        params = {'Bucket': bucket}
+        if self.client.meta.region_name != 'us-east-1':
+            params['CreateBucketConfiguration'] = bucket_config
+
+        # TODO: Consolidate how we handle return codes and errors
+        try:
+            self.client.create_bucket(**params)
+            uni_print("make_bucket: %s\n" % bucket)
+            return 0
+        except Exception as e:
+            uni_print(
+                "make_bucket failed: %s %s\n" % (parsed_args.path, e),
+                sys.stderr
+            )
+            return 1
 
 
-class RbCommand(S3TransferCommand):
+class RbCommand(S3Command):
     NAME = 'rb'
     DESCRIPTION = (
         "Deletes an empty S3 bucket. A bucket must be completely empty "
@@ -723,8 +789,42 @@ class RbCommand(S3TransferCommand):
         "deleted."
     )
     USAGE = "<S3Uri>"
-    ARG_TABLE = [{'name': 'paths', 'nargs': 1, 'positional_arg': True,
+    ARG_TABLE = [{'name': 'path', 'positional_arg': True,
                   'synopsis': USAGE}, FORCE]
+
+    def _run_main(self, parsed_args, parsed_globals):
+        super(RbCommand, self)._run_main(parsed_args, parsed_globals)
+
+        if not parsed_args.path.startswith('s3://'):
+            raise TypeError("%s\nError: Invalid argument type" % self.USAGE)
+        bucket, key = split_s3_bucket_key(parsed_args.path)
+
+        if key:
+            raise ValueError('Please specify a valid bucket name only.'
+                             ' E.g. s3://%s' % bucket)
+
+        if parsed_args.force:
+            self._force(parsed_args.path, parsed_globals)
+
+        try:
+            self.client.delete_bucket(Bucket=bucket)
+            uni_print("remove_bucket: %s\n" % bucket)
+            return 0
+        except Exception as e:
+            uni_print(
+                "remove_bucket failed: %s %s\n" % (parsed_args.path, e),
+                sys.stderr
+            )
+            return 1
+
+    def _force(self, path, parsed_globals):
+        """Calls rm --recursive on the given path."""
+        rm = RmCommand(self._session)
+        rc = rm([path, '--recursive'], parsed_globals)
+        if rc != 0:
+            raise RuntimeError(
+                "remove_bucket failed: Unable to delete all objects in the "
+                "bucket, bucket will not be deleted.")
 
 
 class CommandArchitecture(object):
@@ -794,10 +894,7 @@ class CommandArchitecture(object):
         self.instructions.append('s3_handler')
 
     def needs_filegenerator(self):
-        if self.cmd in ['mb', 'rb'] or self.parameters['is_stream']:
-            return False
-        else:
-            return True
+        return not self.parameters['is_stream']
 
     def choose_sync_strategies(self):
         """Determines the sync strategy for the command.
@@ -860,11 +957,7 @@ class CommandArchitecture(object):
         cmd_translation['s3s3'] = {'cp': 'copy', 'sync': 'copy', 'mv': 'move'}
         cmd_translation['s3local'] = {'cp': 'download', 'sync': 'download',
                                       'mv': 'move'}
-        cmd_translation['s3'] = {
-            'rm': 'delete',
-            'mb': 'make_bucket',
-            'rb': 'remove_bucket'
-        }
+        cmd_translation['s3'] = {'rm': 'delete'}
         result_queue = queue.Queue()
         operation_name = cmd_translation[paths_type][self.cmd]
 
@@ -904,10 +997,6 @@ class CommandArchitecture(object):
 
         file_generator = FileGenerator(**fgen_kwargs)
         rev_generator = FileGenerator(**rgen_kwargs)
-        taskinfo = [TaskInfo(src=files['src']['path'],
-                             src_type='s3',
-                             operation_name=operation_name,
-                             client=self._client)]
         stream_dest_path, stream_compare_key = find_dest_path_comp_key(files)
         stream_file_info = [FileInfo(src=files['src']['path'],
                                      dest=stream_dest_path,
@@ -922,8 +1011,12 @@ class CommandArchitecture(object):
         s3handler = S3Handler(self.session, self.parameters,
                               runtime_config=self._runtime_config,
                               result_queue=result_queue)
-        s3_stream_handler = S3StreamHandler(self.session, self.parameters,
-                                            result_queue=result_queue)
+
+        s3_transfer_handler = s3handler
+        if self.cmd in ['cp', 'rm'] and not self.parameters.get('dryrun'):
+            s3_transfer_handler = S3TransferHandlerFactory(
+                self.parameters, self._runtime_config)(
+                    self._client, result_queue)
 
         sync_strategies = self.choose_sync_strategies()
 
@@ -939,30 +1032,24 @@ class CommandArchitecture(object):
                             's3_handler': [s3handler]}
         elif self.cmd == 'cp' and self.parameters['is_stream']:
             command_dict = {'setup': [stream_file_info],
-                            's3_handler': [s3_stream_handler]}
+                            's3_handler': [s3_transfer_handler]}
         elif self.cmd == 'cp':
             command_dict = {'setup': [files],
                             'file_generator': [file_generator],
                             'filters': [create_filter(self.parameters)],
                             'file_info_builder': [file_info_builder],
-                            's3_handler': [s3handler]}
+                            's3_handler': [s3_transfer_handler]}
         elif self.cmd == 'rm':
             command_dict = {'setup': [files],
                             'file_generator': [file_generator],
                             'filters': [create_filter(self.parameters)],
                             'file_info_builder': [file_info_builder],
-                            's3_handler': [s3handler]}
+                            's3_handler': [s3_transfer_handler]}
         elif self.cmd == 'mv':
             command_dict = {'setup': [files],
                             'file_generator': [file_generator],
                             'filters': [create_filter(self.parameters)],
                             'file_info_builder': [file_info_builder],
-                            's3_handler': [s3handler]}
-        elif self.cmd == 'mb':
-            command_dict = {'setup': [taskinfo],
-                            's3_handler': [s3handler]}
-        elif self.cmd == 'rb':
-            command_dict = {'setup': [taskinfo],
                             's3_handler': [s3handler]}
 
         files = command_dict['setup']
@@ -1043,12 +1130,14 @@ class CommandParameters(object):
     def _validate_streaming_paths(self):
         self.parameters['is_stream'] = False
         if self.parameters['src'] == '-' or self.parameters['dest'] == '-':
+            if self.cmd != 'cp' or self.parameters.get('dir_op'):
+                raise ValueError(
+                    "Streaming currently is only compatible with "
+                    "non-recursive cp commands"
+                )
             self.parameters['is_stream'] = True
             self.parameters['dir_op'] = False
             self.parameters['only_show_errors'] = True
-        if self.parameters['is_stream'] and self.cmd != 'cp':
-            raise ValueError("Streaming currently is only compatible with "
-                             "single file cp commands")
 
     def _validate_path_args(self):
         # If we're using a mv command, you can't copy the object onto itself.

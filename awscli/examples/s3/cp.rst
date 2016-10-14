@@ -65,7 +65,7 @@ this example, the directory ``myDir`` has the files ``test1.txt`` and ``test2.jp
 
 Output::
 
-    upload: myDir/test1.txt to s3://mybucket2/test1.txt
+    upload: myDir/test1.txt to s3://mybucket/test1.txt
 
 **Recursively copying S3 objects to another bucket**
 
@@ -140,13 +140,17 @@ Output::
 
 **Uploading a local file stream to S3**
 
+WARNING:: PowerShell may alter the encoding of or add a CRLF to piped input.
+
 The following ``cp`` command uploads a local file stream from standard input to a specified bucket and key::
 
     aws s3 cp - s3://mybucket/stream.txt
 
 
-**Downloading a S3 object as a local file stream**
+**Downloading an S3 object as a local file stream**
 
-The following ``cp`` command downloads a S3 object locally as a stream to standard output::
+WARNING:: PowerShell may alter the encoding of or add a CRLF to piped or redirected output.
+
+The following ``cp`` command downloads an S3 object locally as a stream to standard output. Downloading as a stream is not currently compatible with the ``--recursive`` parameter::
 
     aws s3 cp s3://mybucket/stream.txt -
