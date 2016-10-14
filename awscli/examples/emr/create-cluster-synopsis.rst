@@ -1,7 +1,6 @@
   create-cluster
      --ami-version <value>
-     --instance-groups <value>
-     --instance-type <value>
+     --instance-type <value> | --instance-groups <value>
      --instance-count <value>
      [--auto-terminate | --no-auto-terminate]
      [--use-default-role]
@@ -15,6 +14,7 @@
      [--enable-debugging | --no-enable-debugging]
      [--tags <value>]
      [--applications <value>]
+     [--emrfs <value>]
      [--bootstrap-actions <value>]
      [--steps <value>]
      [--restore-from-hbase-backup <value>]

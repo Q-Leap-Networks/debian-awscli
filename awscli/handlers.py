@@ -47,25 +47,33 @@ from awscli.customizations.cloudsearch import initialize as cloudsearch_init
 from awscli.customizations.emr.emr import emr_initialize
 from awscli.customizations.cloudsearchdomain import register_cloudsearchdomain
 from awscli.customizations.s3endpoint import register_s3_endpoint
+from awscli.customizations.s3errormsg import register_s3_error_msg
+from awscli.customizations.cliinputjson import register_cli_input_json
+from awscli.customizations.generatecliskeleton import \
+    register_generate_cli_skeleton
 
 
 def awscli_initialize(event_handlers):
     event_handlers.register('load-cli-arg', uri_param)
     param_shorthand = ParamShorthand()
     event_handlers.register('process-cli-arg', param_shorthand)
+    # The s3 error mesage needs to registered before the
+    # generic error handler.
+    register_s3_error_msg(event_handlers)
     error_handler = ErrorHandler()
-    event_handlers.register('after-call.*.*', error_handler)
-    # The following will get fired for every option we are
-    # documenting.  It will attempt to add an example_fn on to
-    # the parameter object if the parameter supports shorthand
-    # syntax.  The documentation event handlers will then use
-    # the examplefn to generate the sample shorthand syntax
-    # in the docs.  Registering here should ensure that this
-    # handler gets called first but it still feels a bit brittle.
-    event_handlers.register('doc-option-example.*.*.*',
-                            param_shorthand.add_example_fn)
+    event_handlers.register('after-call', error_handler)
+#    # The following will get fired for every option we are
+#    # documenting.  It will attempt to add an example_fn on to
+#    # the parameter object if the parameter supports shorthand
+#    # syntax.  The documentation event handlers will then use
+#    # the examplefn to generate the sample shorthand syntax
+#    # in the docs.  Registering here should ensure that this
+#    # handler gets called first but it still feels a bit brittle.
+#    event_handlers.register('doc-option-example.*.*.*',
+#                            param_shorthand.add_example_fn)
     event_handlers.register('doc-examples.*.*',
                             add_examples)
+    register_cli_input_json(event_handlers)
     event_handlers.register('building-argument-table.s3api.*',
                             add_streaming_output_arg)
     event_handlers.register('building-argument-table.ec2.run-instances',
@@ -96,3 +104,4 @@ def awscli_initialize(event_handlers):
     emr_initialize(event_handlers)
     register_cloudsearchdomain(event_handlers)
     register_s3_endpoint(event_handlers)
+    register_generate_cli_skeleton(event_handlers)

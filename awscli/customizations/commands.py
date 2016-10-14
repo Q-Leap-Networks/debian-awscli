@@ -3,14 +3,17 @@ import os
 
 import bcdoc.docevents
 from botocore.compat import OrderedDict
+from botocore import model
+from botocore.validate import validate_parameters
 
 import awscli
 from awscli.clidocs import OperationDocumentEventHandler
 from awscli.argparser import ArgTableArgParser
 from awscli.argprocess import unpack_argument, unpack_cli_arg
 from awscli.clidriver import CLICommand
-from awscli.arguments import CustomArgument
+from awscli.arguments import CustomArgument, create_argument_model_from_schema
 from awscli.help import HelpCommand
+from awscli.schema import SchemaTransformer
 
 
 LOG = logging.getLogger(__name__)
@@ -117,46 +120,44 @@ class BasicCommand(CLICommand):
 
     def __init__(self, session):
         self._session = session
+        self._arg_table = None
+        self._subcommand_table = None
 
     def __call__(self, args, parsed_globals):
         # args is the remaining unparsed args.
         # We might be able to parse these args so we need to create
         # an arg parser and parse them.
-        subcommand_table = self._build_subcommand_table()
-        arg_table = self.arg_table
-        parser = ArgTableArgParser(arg_table, subcommand_table)
+        self._subcommand_table = self._build_subcommand_table()
+        self._arg_table = self._build_arg_table()
+        parser = ArgTableArgParser(self.arg_table, self.subcommand_table)
         parsed_args, remaining = parser.parse_known_args(args)
 
         # Unpack arguments
         for key, value in vars(parsed_args).items():
-            param = None
+            cli_argument = None
 
             # Convert the name to use dashes instead of underscore
             # as these are how the parameters are stored in the
             # `arg_table`.
             xformed = key.replace('_', '-')
-            if xformed in arg_table:
-                param = arg_table[xformed]
+            if xformed in self.arg_table:
+                cli_argument = self.arg_table[xformed]
 
             value = unpack_argument(
                 self._session,
                 'custom',
                 self.name,
-                param,
+                cli_argument,
                 value
             )
 
             # If this parameter has a schema defined, then allow plugins
             # a chance to process and override its value.
-            if param and getattr(param, 'argument_object', None) is not None \
-               and value is not None:
-                param_object = param.argument_object
-
-                # Allow a single event handler to process the value
+            if self._should_allow_plugins_override(cli_argument, value):
                 override = self._session\
                     .emit_first_non_none_response(
                         'process-cli-arg.%s.%s' % ('custom', self.name),
-                        param=param_object, value=value, operation=None)
+                        cli_argument=cli_argument, value=value, operation=None)
 
                 if override is not None:
                     # A plugin supplied a conversion
@@ -164,10 +165,9 @@ class BasicCommand(CLICommand):
                 else:
                     # Unpack the argument, which is a string, into the
                     # correct Python type (dict, list, etc)
-                    value = unpack_cli_arg(param_object, value)
-
-                # Validate param types, required keys, etc
-                param_object.validate(value)
+                    value = unpack_cli_arg(cli_argument, value)
+                self._validate_value_against_schema(
+                    cli_argument.argument_model, value)
 
             setattr(parsed_args, key, value)
 
@@ -176,10 +176,21 @@ class BasicCommand(CLICommand):
         elif getattr(parsed_args, 'subcommand', None) is None:
             # No subcommand was specified so call the main
             # function for this top level command.
+            if remaining:
+                raise ValueError("Unknown options: %s" % ','.join(remaining))
             return self._run_main(parsed_args, parsed_globals)
         else:
-            return subcommand_table[parsed_args.subcommand](remaining,
-                                                            parsed_globals)
+            return self.subcommand_table[parsed_args.subcommand](remaining,
+                                                                 parsed_globals)
+
+    def _validate_value_against_schema(self, model, value):
+        validate_parameters(value, model)
+
+    def _should_allow_plugins_override(self, param, value):
+        if (param and param.argument_model is not None and
+            value is not None):
+            return True
+        return False
 
     def _run_main(self, parsed_args, parsed_globals):
         # Subclasses should implement this method.
@@ -224,20 +235,34 @@ class BasicCommand(CLICommand):
             commands[command['name']] = command['command_class'](self._session)
         return commands
 
-    @property
-    def arg_table(self):
+    def _build_arg_table(self):
         arg_table = OrderedDict()
+        self._session.emit('building-arg-table.%s' % self.NAME,
+                           arg_table=self.ARG_TABLE)
         for arg_data in self.ARG_TABLE:
 
-            custom_argument = CustomArgument(**arg_data)
-
-            # If a custom schema was passed in, create the argument object
-            # so that it can be validated and docs can be generated
+            # If a custom schema was passed in, create the argument_model
+            # so that it can be validated and docs can be generated.
             if 'schema' in arg_data:
-                custom_argument.create_argument_object()
+                argument_model = create_argument_model_from_schema(
+                    arg_data.pop('schema'))
+                arg_data['argument_model'] = argument_model
+            custom_argument = CustomArgument(**arg_data)
 
             arg_table[arg_data['name']] = custom_argument
         return arg_table
+
+    @property
+    def arg_table(self):
+        if self._arg_table is None:
+            self._arg_table = self._build_arg_table()
+        return self._arg_table
+
+    @property
+    def subcommand_table(self):
+        if self._subcommand_table is None:
+            self._subcommand_table = self._build_subcommand_table()
+        return self._subcommand_table
 
     @classmethod
     def add_command(cls, command_table, session, **kwargs):

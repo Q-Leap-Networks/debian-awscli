@@ -30,6 +30,8 @@ awscli.egg-info/top_level.txt
 awscli/customizations/__init__.py
 awscli/customizations/addexamples.py
 awscli/customizations/argrename.py
+awscli/customizations/arguments.py
+awscli/customizations/cliinputjson.py
 awscli/customizations/cloudsearch.py
 awscli/customizations/cloudsearchdomain.py
 awscli/customizations/cloudtrail.py
@@ -43,6 +45,7 @@ awscli/customizations/ec2protocolarg.py
 awscli/customizations/ec2runinstances.py
 awscli/customizations/ec2secgroupsimplify.py
 awscli/customizations/flatten.py
+awscli/customizations/generatecliskeleton.py
 awscli/customizations/globalargs.py
 awscli/customizations/iamvirtmfa.py
 awscli/customizations/paginate.py
@@ -52,6 +55,7 @@ awscli/customizations/rds.py
 awscli/customizations/removals.py
 awscli/customizations/route53resourceid.py
 awscli/customizations/s3endpoint.py
+awscli/customizations/s3errormsg.py
 awscli/customizations/service.py
 awscli/customizations/sessendemail.py
 awscli/customizations/streamingoutputarg.py
@@ -68,7 +72,6 @@ awscli/customizations/emr/argumentschema.py
 awscli/customizations/emr/constants.py
 awscli/customizations/emr/createcluster.py
 awscli/customizations/emr/createdefaultroles.py
-awscli/customizations/emr/defaultconfig.py
 awscli/customizations/emr/describecluster.py
 awscli/customizations/emr/emr.py
 awscli/customizations/emr/emrutils.py
@@ -98,6 +101,12 @@ awscli/customizations/s3/s3handler.py
 awscli/customizations/s3/subcommands.py
 awscli/customizations/s3/tasks.py
 awscli/customizations/s3/utils.py
+awscli/customizations/s3/syncstrategy/__init__.py
+awscli/customizations/s3/syncstrategy/base.py
+awscli/customizations/s3/syncstrategy/delete.py
+awscli/customizations/s3/syncstrategy/exacttimestamps.py
+awscli/customizations/s3/syncstrategy/register.py
+awscli/customizations/s3/syncstrategy/sizeonly.py
 awscli/data/cli.json
 awscli/examples/autoscaling/attach-instances.rst
 awscli/examples/autoscaling/create-auto-scaling-group.rst
@@ -265,6 +274,7 @@ awscli/examples/ec2/get-password-data.rst
 awscli/examples/ec2/modify-image-attribute.rst
 awscli/examples/ec2/modify-instance-attribute.rst
 awscli/examples/ec2/modify-reserved-instances.rst
+awscli/examples/ec2/modify-subnet-attribute.rst
 awscli/examples/ec2/modify-volume-attribute.rst
 awscli/examples/ec2/modify-vpc-attribute.rst
 awscli/examples/ec2/purchase-reserved-instances-offering.rst

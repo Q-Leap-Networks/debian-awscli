@@ -10,6 +10,11 @@ When you are prompted for information, the current value will be displayed in
 config file.  It does not use any configuration values from environment
 variables or the IAM role.
 
+Note: the values you provide for the AWS Access Key ID and the AWS Secret
+Access Key will be written to the shared credentials file
+(``~/.aws/credentials``).
+
+
 =======================
 Configuration Variables
 =======================
@@ -18,7 +23,7 @@ The following configuration variables are supported in the config file:
 
 * **aws_access_key_id** - The AWS access key part of your credentials
 * **aws_secret_access_key** - The AWS secret access key part of your credentials
-* **aws_security_token** - The security token part of your credentials (session tokens only)
+* **aws_session_token** - The session token part of your credentials (session tokens only)
 * **metadata_service_timeout** - The number of seconds to wait until the metadata service
   request times out.  This is used if you are using an IAM role to provide
   your credentials.

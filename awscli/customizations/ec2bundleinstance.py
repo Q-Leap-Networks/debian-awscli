@@ -65,9 +65,8 @@ def _add_params(argument_table, operation, **kwargs):
     # Add the scalar parameters and also change the complex storage
     # param to not be required so the user doesn't get an error from
     # argparse if they only supply scalar params.
-    storage_arg = argument_table.get('storage')
-    storage_param = storage_arg.argument_object
-    storage_param.required = False
+    storage_arg = argument_table['storage']
+    storage_arg.required = False
     arg = BundleArgument(storage_param='Bucket',
                          name='bucket',
                          help_text=BUCKET_DOCS)
@@ -139,11 +138,10 @@ def _generate_signature(params):
         del params['_SAK']
 
 
-def _check_params(**kwargs):
+def _check_params(params, **kwargs):
     # Called just before call but prior to building the params.
     # Adds information not supplied by the user.
-    logger.debug(kwargs)
-    storage = kwargs['params']['storage']['S3']
+    storage = params['storage']['S3']
     if 'UploadPolicy' not in storage:
         _generate_policy(storage)
     if 'UploadPolicySignature' not in storage:
