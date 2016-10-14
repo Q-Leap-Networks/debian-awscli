@@ -129,14 +129,15 @@ def build_bootstrap_action(
     return ba_config
 
 
-def build_s3_link(relative_path='', region=None):
-    if region and region != 'us-east-1':
-        return 's3://{0}.elasticmapreduce{1}'.format(region, relative_path)
-    else:
-        return 's3://elasticmapreduce{0}'.format(relative_path)
+def build_s3_link(relative_path='', region='us-east-1'):
+    if region is None:
+        region = 'us-east-1'
+    return 's3://{0}.elasticmapreduce{1}'.format(region, relative_path)
 
 
-def get_script_runner(region=None):
+def get_script_runner(region='us-east-1'):
+    if region is None:
+        region = 'us-east-1'
     return build_s3_link(
         relative_path=constants.SCRIPT_RUNNER_PATH, region=region)
 
@@ -145,40 +146,6 @@ def check_required_field(structure, name, value):
     if value is None:
         raise exceptions.MissingParametersError(
             object_name=structure, missing=name)
-
-
-def build_pig_install_step(region, version,
-                           action_on_failure=constants.TERMINATE_CLUSTER):
-    step_args = [
-        build_s3_link(constants.PIG_SCRIPT_PATH, region),
-        constants.INSTALL_PIG_ARG,
-        constants.BASE_PATH_ARG,
-        build_s3_link(constants.PIG_BASE_PATH, region),
-        constants.PIG_VERSIONS,
-        version]
-    step = build_step(
-        name=constants.INSTALL_PIG_NAME,
-        action_on_failure=action_on_failure,
-        jar=build_s3_link(constants.SCRIPT_RUNNER_PATH, region),
-        args=step_args)
-    return step
-
-
-def build_hive_install_step(region, version,
-                            action_on_failure=constants.TERMINATE_CLUSTER):
-    step_args = [
-        build_s3_link(constants.HIVE_SCRIPT_PATH, region),
-        constants.INSTALL_HIVE_ARG,
-        constants.BASE_PATH_ARG,
-        build_s3_link(constants.HIVE_BASE_PATH),
-        constants.HIVE_VERSIONS,
-        version]
-    step = build_step(
-        name=constants.INSTALL_HIVE_NAME,
-        action_on_failure=action_on_failure,
-        jar=build_s3_link(constants.SCRIPT_RUNNER_PATH, region),
-        args=step_args)
-    return step
 
 
 def call(session, operation_object, parameters, region_name=None,
@@ -236,27 +203,30 @@ def get_cluster_state(session, parsed_globals, cluster_id):
     return data['Cluster']['Status']['State']
 
 
-def find_master_instance(session, parsed_globals, cluster_id):
-    """ Find master instance from the list of instances. """
-
+def _find_master_instance(session, parsed_globals, cluster_id):
+    """
+    Find the most recently created master instance.
+    If the master instance is not available yet,
+     the method will return None.
+    """
     emr = session.get_service('emr')
     endpoint = get_endpoint(emr, parsed_globals)
-    cluster_state = get_cluster_state(session, parsed_globals, cluster_id)
-    if any(cluster_state == i for i in constants.TERMINATED_STATES):
-        raise exceptions.ClusterTerminatedError
+    operation_object = emr.get_operation('ListInstances')
+    pages = operation_object.paginate(
+        endpoint, ClusterId=cluster_id, InstanceGroupTypes=['MASTER'])
+    return _find_most_recently_created(pages)
+
+
+def find_master_public_dns(session, parsed_globals, cluster_id):
+    """
+    Returns the master_instance's 'PublicDnsName'.
+    """
+    master_instance = _find_master_instance(
+        session, parsed_globals, cluster_id)
+    if master_instance is None:
+        return ""
     else:
-        try:
-            cluster_running = emr.get_waiter('ClusterRunning')
-            if cluster_state in constants.STARTING_STATES:
-                print("Waiting for the cluster to start.")
-            cluster_running.wait(endpoint, ClusterId=cluster_id)
-        except WaiterError:
-            return None
-        operation_object = emr.get_operation('ListInstances')
-        pages = operation_object.paginate(
-            endpoint, ClusterId=cluster_id, InstanceGroupTypes=['MASTER'])
-        master_instance = _find_most_recently_created(pages)
-        return master_instance
+        return master_instance.get('PublicDnsName')
 
 
 def which(program):

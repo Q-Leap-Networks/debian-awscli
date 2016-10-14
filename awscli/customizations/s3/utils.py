@@ -10,6 +10,7 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import argparse
 from datetime import datetime
 import mimetypes
 import hashlib
@@ -27,6 +28,29 @@ from botocore.compat import unquote_str
 
 from awscli.customizations.s3.constants import MAX_PARTS
 from awscli.customizations.s3.constants import MAX_SINGLE_UPLOAD_SIZE
+
+
+class AppendFilter(argparse.Action):
+    """
+    This class is used as an action when parsing the parameters.
+    Specifically it is used for actions corresponding to exclude
+    and include filters.  What it does is that it appends a list
+    consisting of the name of the parameter and its value onto
+    a list containing these [parameter, value] lists.  In this
+    case, the name of the parameter will either be --include or
+    --exclude and the value will be the rule to apply.  This will
+    format all of the rules inputted into the command line
+    in a way compatible with the Filter class.  Note that rules that
+    appear later in the command line take preferance over rulers that
+    appear earlier.
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        filter_list = getattr(namespace, self.dest)
+        if filter_list:
+            filter_list.append([option_string, values[0]])
+        else:
+            filter_list = [[option_string, values[0]]]
+        setattr(namespace, self.dest, filter_list)
 
 
 class MD5Error(Exception):
@@ -310,8 +334,10 @@ class BucketLister(object):
         # we're paginating.  The pagination token is the last Key of the
         # Contents list.  However, botocore does not know that the encoding
         # type needs to be urldecoded.
-        with ScopedEventHandler(self._operation.session, 'after-call.s3.ListObjects',
-                                self._decode_keys):
+        with ScopedEventHandler(self._operation.session,
+                                'after-call.s3.ListObjects',
+                                self._decode_keys,
+                                'BucketListerDecodeKeys'):
             pages = self._operation.paginate(self._endpoint, **kwargs)
             for response, page in pages:
                 contents = page['Contents']
@@ -329,16 +355,18 @@ class BucketLister(object):
 class ScopedEventHandler(object):
     """Register an event callback for the duration of a scope."""
 
-    def __init__(self, session, event_name, handler):
+    def __init__(self, session, event_name, handler, unique_id=None):
         self._session = session
         self._event_name = event_name
         self._handler = handler
+        self._unique_id = unique_id
 
     def __enter__(self):
-        self._session.register(self._event_name, self._handler)
+        self._session.register(self._event_name, self._handler, self._unique_id)
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._session.unregister(self._event_name, self._handler)
+        self._session.unregister(self._event_name, self._handler,
+                                 self._unique_id)
 
 
 IORequest = namedtuple('IORequest', ['filename', 'offset', 'data'])
