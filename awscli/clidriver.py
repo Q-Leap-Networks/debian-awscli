@@ -35,9 +35,13 @@ from awscli.arguments import ListArgument
 from awscli.arguments import BooleanArgument
 from awscli.arguments import CLIArgument
 from awscli.arguments import UnknownArgumentError
+from awscli.argprocess import unpack_argument
 
 
 LOG = logging.getLogger('awscli.clidriver')
+LOG_FORMAT = (
+    '%(asctime)s - %(threadName)s - %(name)s - %(levelname)s - %(message)s')
+
 
 
 def main():
@@ -125,9 +129,9 @@ class CLIDriver(object):
                 choices = option_params['choices']
                 if not isinstance(choices, list):
                     # Assume it's a reference like
-                    # "{provider}/_regions", so first resolve
+                    # "{provider}/_foo", so first resolve
                     # the provider.
-                    provider = self.session.get_variable('provider')
+                    provider = self.session.get_config_variable('provider')
                     # The grab the var from the session
                     choices_path = choices.format(provider=provider)
                     choices = list(self.session.get_data(choices_path))
@@ -201,6 +205,7 @@ class CLIDriver(object):
         except Exception as e:
             LOG.debug("Exception caught in main()", exc_info=True)
             LOG.debug("Exiting with rc 255")
+            sys.stderr.write("\n")
             sys.stderr.write("%s\n" % e)
             return 255
 
@@ -210,7 +215,8 @@ class CLIDriver(object):
         sys.stderr.write('\n')
 
     def _handle_top_level_args(self, args):
-        self.session.emit('top-level-args-parsed', parsed_args=args)
+        self.session.emit(
+            'top-level-args-parsed', parsed_args=args, session=self.session)
         if args.profile:
             self.session.profile = args.profile
         if args.debug:
@@ -218,8 +224,10 @@ class CLIDriver(object):
             # Unfortunately, by setting debug mode here, we miss out
             # on all of the debug events prior to this such as the
             # loading of plugins, etc.
-            self.session.set_debug_logger(logger_name='botocore')
-            self.session.set_debug_logger(logger_name='awscli')
+            self.session.set_stream_logger('botocore', logging.DEBUG,
+                                           format_string=LOG_FORMAT)
+            self.session.set_stream_logger('awscli', logging.DEBUG,
+                                           format_string=LOG_FORMAT)
             LOG.debug("CLI version: %s, botocore version: %s",
                       self.session.user_agent(),
                       botocore_version)
@@ -427,11 +435,10 @@ class ServiceOperation(object):
         if remaining:
             raise UnknownArgumentError(
                 "Unknown options: %s" % ', '.join(remaining))
-        service_name = self._service_object.endpoint_prefix
-        operation_name = self._operation_object.name
         event = 'operation-args-parsed.%s.%s' % (self._parent_name,
                                                  self._name)
-        self._emit(event, parsed_args=parsed_args)
+        self._emit(event, parsed_args=parsed_args,
+                   parsed_globals=parsed_globals)
         call_parameters = self._build_call_parameters(parsed_args,
                                                       self.arg_table)
         return self._operation_caller.invoke(
@@ -459,8 +466,24 @@ class ServiceOperation(object):
         for arg_name, arg_object in arg_table.items():
             py_name = arg_object.py_name
             if py_name in parsed_args:
-                arg_object.add_to_params(service_params, parsed_args[py_name])
+                value = parsed_args[py_name]
+                value = self._unpack_arg(arg_object, value)
+                arg_object.add_to_params(service_params, value)
         return service_params
+
+    def _unpack_arg(self, arg_object, value):
+        # Unpacks a commandline argument into a Python value by firing the
+        # load-cli-arg.service-name.operation-name event.
+        session = self._service_object.session
+        service_name = self._service_object.endpoint_prefix
+        operation_name = xform_name(self._operation_object.name, '-')
+
+        param = arg_object
+        if hasattr(param, 'argument_object') and param.argument_object:
+            param = param.argument_object
+
+        return unpack_argument(session, service_name, operation_name,
+                               param, value)
 
     def _create_argument_table(self):
         argument_table = OrderedDict()
@@ -479,8 +502,6 @@ class ServiceOperation(object):
                                    self._operation_object)
             arg_object.add_to_arg_table(argument_table)
         LOG.debug(argument_table)
-        service_name = self._service_object.endpoint_prefix
-        operation_name = self._operation_object.name
         self._emit('building-argument-table.%s.%s' % (self._parent_name,
                                                       self._name),
                    operation=self._operation_object,
@@ -517,8 +538,8 @@ class CLIOperationCaller(object):
             raise NoCredentialsError()
         endpoint = operation_object.service.get_endpoint(
             region_name=parsed_globals.region,
-            endpoint_url=parsed_globals.endpoint_url)
-        endpoint.verify = not parsed_globals.no_verify_ssl
+            endpoint_url=parsed_globals.endpoint_url,
+            verify=parsed_globals.verify_ssl)
         if operation_object.can_paginate and parsed_globals.paginate:
             pages = operation_object.paginate(endpoint, **parameters)
             self._display_response(operation_object, pages,
@@ -533,6 +554,6 @@ class CLIOperationCaller(object):
     def _display_response(self, operation, response, args):
         output = args.output
         if output is None:
-            output = self._session.get_variable('output')
+            output = self._session.get_config_variable('output')
         formatter = get_formatter(output, args)
         formatter(operation, response)

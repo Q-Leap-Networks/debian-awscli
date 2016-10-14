@@ -1,12 +1,39 @@
-import bcdoc.docevents
+import logging
+import os
 
+import bcdoc.docevents
 from botocore.compat import OrderedDict
 
-from awscli.clidocs import CLIDocumentEventHandler
+import awscli
+from awscli.clidocs import OperationDocumentEventHandler
 from awscli.argparser import ArgTableArgParser
+from awscli.argprocess import unpack_argument, unpack_cli_arg
 from awscli.clidriver import CLICommand
 from awscli.arguments import CustomArgument
 from awscli.help import HelpCommand
+
+
+LOG = logging.getLogger(__name__)
+_open = open
+
+
+class _FromFile(object):
+    def __init__(self, *paths, **kwargs):
+        """
+        ``**kwargs`` can contain a ``root_module`` argument
+        that contains the root module where the file contents
+        should be searched.  This is an optional argument, and if
+        no value is provided, will default to ``awscli``.  This means
+        that by default we look for examples in the ``awscli`` module.
+
+        """
+        self.filename = None
+        if paths:
+            self.filename = os.path.join(*paths)
+        if 'root_module' in kwargs:
+            self.root_module = kwargs['root_module']
+        else:
+            self.root_module = awscli
 
 
 class BasicCommand(CLICommand):
@@ -44,6 +71,9 @@ class BasicCommand(CLICommand):
     #     {'name': 'argument-two', 'help_text': 'This argument does some other thing.',
     #      'action': 'store', 'choices': ['a', 'b', 'c']},
     # ]
+    #
+    # A `schema` parameter option is available to accept a custom JSON
+    # structure as input. See the file `awscli/schema.py` for more info.
     ARG_TABLE = []
     # If you want the command to have subcommands, you can provide a list of
     # dicts.  We use a list here because we want to allow a user to provide
@@ -54,6 +84,33 @@ class BasicCommand(CLICommand):
     # ]
     # The command_class must subclass from ``BasicCommand``.
     SUBCOMMANDS = []
+
+    FROM_FILE = _FromFile
+    # You can set the DESCRIPTION, SYNOPSIS, and EXAMPLES to FROM_FILE
+    # and we'll automatically read in that data from the file.
+    # This is useful if you have a lot of content and would prefer to keep
+    # the docs out of the class definition.  For example:
+    #
+    # DESCRIPTION = FROM_FILE
+    #
+    # will set the DESCRIPTION value to the contents of
+    # awscli/examples/<command name>/_description.rst
+    # The naming conventions for these attributes are:
+    #
+    # DESCRIPTION = awscli/examples/<command name>/_description.rst
+    # SYNOPSIS = awscli/examples/<command name>/_synopsis.rst
+    # EXAMPLES = awscli/examples/<command name>/_examples.rst
+    #
+    # You can also provide a relative path and we'll load the file
+    # from the specified location:
+    #
+    # DESCRIPTION = awscli/examples/<filename>
+    #
+    # For example:
+    #
+    # DESCRIPTION = FROM_FILE('command, 'subcommand, '_description.rst')
+    # DESCRIPTION = 'awscli/examples/command/subcommand/_description.rst'
+    #
 
     # At this point, the only other thing you have to implement is a _run_main
     # method (see the method for more information).
@@ -66,16 +123,62 @@ class BasicCommand(CLICommand):
         # We might be able to parse these args so we need to create
         # an arg parser and parse them.
         subcommand_table = self._build_subcommand_table()
-        parser = ArgTableArgParser(self.arg_table, subcommand_table)
+        arg_table = self.arg_table
+        parser = ArgTableArgParser(arg_table, subcommand_table)
         parsed_args, remaining = parser.parse_known_args(args)
+
+        # Unpack arguments
+        for key, value in vars(parsed_args).items():
+            param = None
+
+            # Convert the name to use dashes instead of underscore
+            # as these are how the parameters are stored in the
+            # `arg_table`.
+            xformed = key.replace('_', '-')
+            if xformed in arg_table:
+                param = arg_table[xformed]
+
+            value = unpack_argument(
+                self._session,
+                'custom',
+                self.name,
+                param,
+                value
+            )
+
+            # If this parameter has a schema defined, then allow plugins
+            # a chance to process and override its value.
+            if param and getattr(param, 'argument_object', None) is not None \
+               and value is not None:
+                param_object = param.argument_object
+
+                # Allow a single event handler to process the value
+                override = self._session\
+                    .emit_first_non_none_response(
+                        'process-cli-arg.%s.%s' % ('custom', self.name),
+                        param=param_object, value=value, operation=None)
+
+                if override is not None:
+                    # A plugin supplied a conversion
+                    value = override
+                else:
+                    # Unpack the argument, which is a string, into the
+                    # correct Python type (dict, list, etc)
+                    value = unpack_cli_arg(param_object, value)
+
+                # Validate param types, required keys, etc
+                param_object.validate(value)
+
+            setattr(parsed_args, key, value)
+
         if hasattr(parsed_args, 'help'):
             self._display_help(parsed_args, parsed_globals)
         elif getattr(parsed_args, 'subcommand', None) is None:
             # No subcommand was specified so call the main
             # function for this top level command.
-            self._run_main(parsed_args, parsed_globals)
+            return self._run_main(parsed_args, parsed_globals)
         else:
-            subcommand_table[parsed_args.subcommand](remaining, parsed_globals)
+            return subcommand_table[parsed_args.subcommand](remaining, parsed_globals)
 
     def _run_main(self, parsed_args, parsed_globals):
         # Subclasses should implement this method.
@@ -109,15 +212,25 @@ class BasicCommand(CLICommand):
 
     @property
     def arg_table(self):
-        arg_table = {}
+        arg_table = OrderedDict()
         for arg_data in self.ARG_TABLE:
             custom_argument = CustomArgument(**arg_data)
+
+            # If a custom schema was passed in, create the argument object
+            # so that it can be validated and docs can be generated
+            if 'schema' in arg_data:
+                custom_argument.create_argument_object()
+
             arg_table[arg_data['name']] = custom_argument
         return arg_table
 
     @classmethod
     def add_command(cls, command_table, session, **kwargs):
         command_table[cls.NAME] = cls(session)
+
+    @property
+    def name(self):
+        return self.NAME
 
 
 class BasicHelp(HelpCommand):
@@ -135,13 +248,41 @@ class BasicHelp(HelpCommand):
 
         # These are public attributes that are mapped from the command
         # object.  These are used by the BasicDocHandler below.
-        self.description = command_object.DESCRIPTION
-        self.synopsis = command_object.SYNOPSIS
-        self.examples = command_object.EXAMPLES
+        self._description = command_object.DESCRIPTION
+        self._synopsis = command_object.SYNOPSIS
+        self._examples = command_object.EXAMPLES
 
     @property
     def name(self):
         return self.obj.NAME
+
+    @property
+    def description(self):
+        return self._get_doc_contents('_description')
+
+    @property
+    def synopsis(self):
+        return self._get_doc_contents('_synopsis')
+
+    @property
+    def examples(self):
+        return self._get_doc_contents('_examples')
+
+    def _get_doc_contents(self, attr_name):
+        value = getattr(self, attr_name)
+        if isinstance(value, BasicCommand.FROM_FILE):
+            if value.filename is not None:
+                trailing_path = value.filename
+            else:
+                trailing_path = os.path.join(self.name, attr_name + '.rst')
+            root_module = value.root_module
+            doc_path = os.path.join(
+                os.path.abspath(os.path.dirname(root_module.__file__)), 'examples',
+                trailing_path)
+            with _open(doc_path) as f:
+                return f.read()
+        else:
+            return value
 
     def __call__(self, args, parsed_globals):
         # Create an event handler for a Provider Document
@@ -154,10 +295,13 @@ class BasicHelp(HelpCommand):
         instance.unregister()
 
 
-class BasicDocHandler(CLIDocumentEventHandler):
+class BasicDocHandler(OperationDocumentEventHandler):
     def __init__(self, help_command):
         super(BasicDocHandler, self).__init__(help_command)
         self.doc = help_command.doc
+
+    def build_translation_map(self):
+        return {}
 
     def doc_description(self, help_command, **kwargs):
         self.doc.style.h2('Description')
@@ -173,15 +317,22 @@ class BasicDocHandler(CLIDocumentEventHandler):
             self.doc.style.start_codeblock()
             self.doc.writeln(help_command.synopsis)
 
+    def doc_synopsis_option(self, arg_name, help_command, **kwargs):
+        if not help_command.synopsis:
+            super(BasicDocHandler, self).doc_synopsis_option(
+                arg_name=arg_name,
+                help_command=help_command, **kwargs)
+        else:
+            # A synopsis has been provided so we don't need to write
+            # anything here.
+            pass
+
     def doc_synopsis_end(self, help_command, **kwargs):
         if not help_command.synopsis:
             super(BasicDocHandler, self).doc_synopsis_end(
                 help_command=help_command, **kwargs)
         else:
             self.doc.style.end_codeblock()
-
-    def doc_option_example(self, arg_name, help_command, **kwargs):
-        pass
 
     def doc_examples(self, help_command, **kwargs):
         if help_command.examples:
@@ -195,4 +346,7 @@ class BasicDocHandler(CLIDocumentEventHandler):
         pass
 
     def doc_subitems_end(self, help_command, **kwargs):
+        pass
+
+    def doc_output(self, help_command, event_name, **kwargs):
         pass
