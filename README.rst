@@ -11,48 +11,14 @@ aws-cli
   :target: https://coveralls.io/r/aws/aws-cli
 
 
-This package provides a unified command line interface to many
-Amazon Web Services.
-
-The currently supported services include:
-
-* AWS CloudFormation
-* AWS Data Pipeline (Preview)
-* AWS Direct Connect
-* AWS Elastic Beanstalk
-* AWS Identity and Access Management
-* AWS Import/Export
-* AWS OpsWorks
-* AWS Security Token Service
-* AWS Storage Gateway
-* AWS Support
-* Amazon CloudFront (Preview)
-* Amazon CloudSearch
-* Amazon CloudWatch
-* Amazon DynamoDB
-* Amazon ElastiCache
-* Amazon Elastic Compute Cloud
-* Amazon Elastic MapReduce (Preview)
-* Amazon Elastic Transcoder
-* Amazon Kinesis
-* Amazon Redshift
-* Amazon Relational Database Service (Beta)
-* Amazon Route 53
-* Amazon Simple Email Service
-* Amazon Simple Notification Service
-* Amazon Simple Queue Service
-* Amazon Storage Gateway
-* Amazon Simple Storage Service
-* Amazon Simple Workflow Service
-* Auto Scaling
-* Elastic Load Balancing
-
+This package provides a unified command line interface to Amazon Web Services.
 
 The aws-cli package works on Python versions:
 
 * 2.6.5 and greater
 * 2.7.x and greater
 * 3.3.x and greater
+* 3.4.x and greater
 
 .. attention::
    We recommend that all customers regularly monitor the
@@ -113,7 +79,8 @@ For tcsh::
 
 You should add this to your startup scripts to enable it for future sessions.
 
-For zsh please refer to bin/aws_zsh_completer.sh.  Source that file::
+For zsh please refer to bin/aws_zsh_completer.sh.  Source that file, e.g.
+from your `~/.zshrc`, and make sure you run `compinit` before::
 
     $ source bin/aws_zsh_completer.sh
 
@@ -130,6 +97,14 @@ can do this in several ways:
 * Environment variables
 * Config file
 * IAM Role
+
+The quickest way to get started is to run the ``aws configure`` command::
+
+    $ aws configure
+    AWS Access Key ID: foo
+    AWS Secret Access Key: bar
+    Default region name [us-west-2]: us-west-2
+    Default output format [None]: json
 
 To use environment variables, do the following::
 
@@ -178,23 +153,25 @@ In addition to credentials, a number of other variables can be
 configured either with environment variables, configuration file
 entries or both.  The following table documents these.
 
-=========== ========= ===================== ===================== ============================
-Variable    Option    Config Entry          Environment Variable  Description
-=========== ========= ===================== ===================== ============================
-profile     --profile profile               AWS_DEFAULT_PROFILE   Default profile name
------------ --------- --------------------- --------------------- ----------------------------
-region      --region  region                AWS_DEFAULT_REGION    Default AWS Region
------------ --------- --------------------- --------------------- ----------------------------
-config_file                                 AWS_CONFIG_FILE       Alternate location of config
------------ --------- --------------------- --------------------- ----------------------------
-output      --output  output                AWS_DEFAULT_OUTPUT    Default output style
------------ --------- --------------------- --------------------- ----------------------------
-access_key            aws_access_key_id     AWS_ACCESS_KEY_ID     AWS Access Key
------------ --------- --------------------- --------------------- ----------------------------
-secret_key            aws_secret_access_key AWS_SECRET_ACCESS_KEY AWS Secret Key
------------ --------- --------------------- --------------------- ----------------------------
-token                 aws_security_token    AWS_SECURITY_TOKEN    AWS Token (temp credentials)
-=========== ========= ===================== ===================== ============================
+=========== =========== ===================== ===================== ============================
+Variable    Option      Config Entry          Environment Variable  Description
+=========== =========== ===================== ===================== ============================
+profile     --profile   profile               AWS_DEFAULT_PROFILE   Default profile name
+----------- ----------- --------------------- --------------------- ----------------------------
+region      --region    region                AWS_DEFAULT_REGION    Default AWS Region
+----------- ----------- --------------------- --------------------- ----------------------------
+config_file                                   AWS_CONFIG_FILE       Alternate location of config
+----------- ----------- --------------------- --------------------- ----------------------------
+output      --output    output                AWS_DEFAULT_OUTPUT    Default output style
+----------- ----------- --------------------- --------------------- ----------------------------
+ca_bundle   --ca-bundle ca_bundle             AWS_CA_BUNDLE         CA Certificate Bundle
+----------- ----------- --------------------- --------------------- ----------------------------
+access_key              aws_access_key_id     AWS_ACCESS_KEY_ID     AWS Access Key
+----------- ----------- --------------------- --------------------- ----------------------------
+secret_key              aws_secret_access_key AWS_SECRET_ACCESS_KEY AWS Secret Key
+----------- ----------- --------------------- --------------------- ----------------------------
+token                   aws_session_token     AWS_SESSION_TOKEN     AWS Token (temp credentials)
+=========== =========== ===================== ===================== ============================
 
 ^^^^^^^^
 Examples
@@ -212,7 +189,7 @@ To include it in your config file::
     [default]
     aws_access_key_id=<default access key>
     aws_secret_access_key=<default secret key>
-    region=us-west-1  # This will be used as the default
+    region=us-west-1
 
 Similarly, the ``profile`` variable can be used to specify which profile to use
 if one is not explicitly specified on the command line via the
@@ -228,8 +205,7 @@ purpose.
 Accessing Services With Global Endpoints
 ----------------------------------------
 
-Some services, such as AWS Identity and Access Management (IAM),
-AWS Security Token Service (STS), and Amazon Simple Email Service (SES)
+Some services, such as AWS Identity and Access Management (IAM)
 have a single, global endpoint rather than different endpoints for
 each region.
 
@@ -307,14 +283,38 @@ the same except the prefix used is ``https://`` or ``http://``::
 Command Output
 --------------
 
-The default output for commands is currently JSON.  This may change in the
-future but for now it provides the most complete output.  You may find the
-`jq <http://stedolan.github.com/jq/>`_ tool useful in processing the JSON
-output for other uses.
+The default output for commands is currently JSON.  You can use the
+``--query`` option to extract the output elements from this JSON document.
+For more information on the expression language used for the ``--query``
+argument, you can read the
+`JMESPath Tutorial <http://jmespath.org/tutorial.html>`__.
 
-There is also an ASCII table format available.  You can select this
-style with the ``--output`` option or you can make this style your default
-output style via environment variable or config file entry as described above.
+^^^^^^^^
+Examples
+^^^^^^^^
+
+Get a list of IAM user names::
+
+    $ aws iam list-users --query Users[].UserName
+
+Get a list of key names and their sizes in an S3 bucket::
+
+    $ aws s3api list-objects --bucket b --query Contents[].[Key,Size]
+
+Get a list of all EC2 instances and include their Instance ID, State Name,
+and their Name (if they've been tagged with a Name)::
+
+    $ aws ec2 describe-instances --query \
+      'Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key==`Name`] | [0].Value]'
+
+
+You may also find the `jq <http://stedolan.github.com/jq/>`_ tool useful in
+processing the JSON output for other uses.
+
+There is also an ASCII table format available.  You can select this style with
+the ``--output table`` option or you can make this style your default output
+style via environment variable or config file entry as described above.
+Try adding ``--output table`` to the above commands.
 
 
 ---------------
@@ -338,7 +338,6 @@ Additionally, there are several other packages that are developed in tandem
 with the CLI.  This includes:
 
 * `botocore <https://github.com/boto/botocore>`__
-* `bcdoc <https://github.com/boto/bcdoc>`__
 * `jmespath <https://github.com/boto/jmespath>`__
 
 If you just want to install a snapshot of the latest development version of
@@ -351,15 +350,13 @@ This file points to the development version of the above packages::
 
 However, to keep up to date, you will continually have to run the
 ``pip install -r requirements.txt`` file to pull in the latest changes
-from the develop branches of botocore, bcdoc, etc.
+from the develop branches of botocore, jmespath, etc.
 
 You can optionally clone each of those repositories and run "pip install -e ."
 for each repository::
 
     git clone <jmespath> && cd jmespath/
     pip install -e . && cd ..
-    git clone <bcdoc> && cd bcdoc/
-    pip install -e . &&  cd ..
     git clone <botocore> && cd botocore/
     pip install -e . && cd ..
     git clone <awscli> && cd aws-cli/

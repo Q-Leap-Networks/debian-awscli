@@ -7,10 +7,12 @@ import threading
 
 from botocore.vendored import requests
 from botocore.exceptions import IncompleteReadError
+from botocore.vendored.requests.packages.urllib3.exceptions import \
+    ReadTimeoutError
 
 from awscli.customizations.s3.utils import find_bucket_key, MD5Error, \
-    operate, ReadFileChunk, relative_path, IORequest, IOCloseRequest, \
-    PrintTask
+    ReadFileChunk, relative_path, IORequest, IOCloseRequest, PrintTask, \
+    RequestParamsMapper
 
 
 LOGGER = logging.getLogger(__name__)
@@ -66,7 +68,6 @@ class BasicTask(OrderableTask):
     def __init__(self, session, filename, parameters,
                  result_queue, payload=None):
         self.session = session
-        self.service = self.session.get_service('s3')
 
         self.filename = filename
         self.filename.parameters = parameters
@@ -126,12 +127,13 @@ class BasicTask(OrderableTask):
 
 class CopyPartTask(OrderableTask):
     def __init__(self, part_number, chunk_size,
-                 result_queue, upload_context, filename):
+                 result_queue, upload_context, filename, params):
         self._result_queue = result_queue
         self._upload_context = upload_context
         self._part_number = part_number
         self._chunk_size = chunk_size
         self._filename = filename
+        self._params = params
 
     def _is_last_part(self, part_number):
         return self._part_number == int(
@@ -156,14 +158,14 @@ class CopyPartTask(OrderableTask):
             upload_id = self._upload_context.wait_for_upload_id()
             bucket, key = find_bucket_key(self._filename.dest)
             src_bucket, src_key = find_bucket_key(self._filename.src)
-            params = {'endpoint': self._filename.endpoint,
-                      'bucket': bucket, 'key': key,
-                      'part_number': self._part_number,
-                      'upload_id': upload_id,
-                      'copy_source': '%s/%s' % (src_bucket, src_key),
-                      'copy_source_range': range_param}
-            response_data, http = operate(
-                self._filename.service, 'UploadPartCopy', params)
+            params = {'Bucket': bucket, 'Key': key,
+                      'PartNumber': self._part_number,
+                      'UploadId': upload_id,
+                      'CopySource': '%s/%s' % (src_bucket, src_key),
+                      'CopySourceRange': range_param}
+            RequestParamsMapper.map_upload_part_copy_params(
+                params, self._params)
+            response_data = self._filename.client.upload_part_copy(**params)
             etag = response_data['CopyPartResult']['ETag'][1:-1]
             self._upload_context.announce_finished_part(
                 etag=etag, part_number=self._part_number)
@@ -201,12 +203,13 @@ class UploadPartTask(OrderableTask):
     object.
     """
     def __init__(self, part_number, chunk_size, result_queue, upload_context,
-                 filename, payload=None):
+                 filename, params, payload=None):
         self._result_queue = result_queue
         self._upload_context = upload_context
         self._part_number = part_number
         self._chunk_size = chunk_size
         self._filename = filename
+        self._params = params
         self._payload = payload
 
     def _read_part(self):
@@ -229,14 +232,13 @@ class UploadPartTask(OrderableTask):
                 total = int(math.ceil(
                     self._filename.size/float(self._chunk_size)))
                 body = self._read_part()
-            params = {'endpoint': self._filename.endpoint,
-                      'bucket': bucket, 'key': key,
-                      'part_number': self._part_number,
-                      'upload_id': upload_id,
-                      'body': body}
+            params = {'Bucket': bucket, 'Key': key,
+                      'PartNumber': self._part_number,
+                      'UploadId': upload_id,
+                      'Body': body}
+            RequestParamsMapper.map_upload_part_params(params, self._params)
             try:
-                response_data, http = operate(
-                    self._filename.service, 'UploadPart', params)
+                response_data = self._filename.client.upload_part(**params)
             finally:
                 body.close()
             etag = response_data['ETag'][1:-1]
@@ -267,9 +269,10 @@ class UploadPartTask(OrderableTask):
 
 
 class CreateLocalFileTask(OrderableTask):
-    def __init__(self, context, filename):
+    def __init__(self, context, filename, result_queue):
         self._context = context
         self._filename = filename
+        self._result_queue = result_queue
 
     def __call__(self):
         dirname = os.path.dirname(self._filename.dest)
@@ -288,6 +291,11 @@ class CreateLocalFileTask(OrderableTask):
             with open(self._filename.dest, 'wb'):
                 pass
         except Exception as e:
+            message = print_operation(self._filename, failed=True,
+                                      dryrun=False)
+            message += '\n' + str(e)
+            result = {'message': message, 'error': True}
+            self._result_queue.put(PrintTask(**result))
             self._context.cancel()
         else:
             self._context.announce_file_created()
@@ -310,12 +318,12 @@ class CompleteDownloadTask(OrderableTask):
         self._context.wait_for_completion()
         last_update_tuple = self._filename.last_update.timetuple()
         mod_timestamp = time.mktime(last_update_tuple)
-        os.utime(self._filename.dest, (int(mod_timestamp), int(mod_timestamp)))
+        desired_mtime = int(mod_timestamp)
         message = print_operation(self._filename, False,
                                   self._parameters['dryrun'])
         print_task = {'message': message, 'error': False}
         self._result_queue.put(PrintTask(**print_task))
-        self._io_queue.put(IOCloseRequest(self._filename.dest))
+        self._io_queue.put(IOCloseRequest(self._filename.dest, desired_mtime))
 
 
 class DownloadPartTask(OrderableTask):
@@ -332,15 +340,16 @@ class DownloadPartTask(OrderableTask):
     READ_TIMEOUT = 60
     TOTAL_ATTEMPTS = 5
 
-    def __init__(self, part_number, chunk_size, result_queue, service,
-                 filename, context, io_queue):
+    def __init__(self, part_number, chunk_size, result_queue,
+                 filename, context, io_queue, params):
         self._part_number = part_number
         self._chunk_size = chunk_size
         self._result_queue = result_queue
         self._filename = filename
-        self._service = filename.service
+        self._client = filename.client
         self._context = context
         self._io_queue = io_queue
+        self._params = params
 
     def __call__(self):
         try:
@@ -363,14 +372,15 @@ class DownloadPartTask(OrderableTask):
         LOGGER.debug("Downloading bytes range of %s for file %s", range_param,
                      self._filename.dest)
         bucket, key = find_bucket_key(self._filename.src)
-        params = {'endpoint': self._filename.endpoint, 'bucket': bucket,
-                  'key': key, 'range': range_param}
+        params = {'Bucket': bucket,
+                  'Key': key,
+                  'Range': range_param}
+        RequestParamsMapper.map_get_object_params(params, self._params)
         for i in range(self.TOTAL_ATTEMPTS):
             try:
                 LOGGER.debug("Making GetObject requests with byte range: %s",
                              range_param)
-                response_data, http = operate(self._service, 'GetObject',
-                                              params)
+                response_data = self._client.get_object(**params)
                 LOGGER.debug("Response received from GetObject")
                 body = response_data['Body']
                 self._queue_writes(body)
@@ -383,8 +393,8 @@ class DownloadPartTask(OrderableTask):
                 self._result_queue.put(PrintTask(**result))
                 LOGGER.debug("Task complete: %s", self)
                 return
-            except (socket.timeout, socket.error) as e:
-                LOGGER.debug("Socket timeout caught, retrying request, "
+            except (socket.timeout, socket.error, ReadTimeoutError) as e:
+                LOGGER.debug("Timeout error caught, retrying request, "
                              "(attempt %s / %s)", i, self.TOTAL_ATTEMPTS,
                              exc_info=True)
                 continue
@@ -401,10 +411,31 @@ class DownloadPartTask(OrderableTask):
                      self._part_number, self._filename.dest)
         iterate_chunk_size = self.ITERATE_CHUNK_SIZE
         body.set_socket_timeout(self.READ_TIMEOUT)
+        if self._filename.is_stream:
+            self._queue_writes_for_stream(body)
+        else:
+            self._queue_writes_in_chunks(body, iterate_chunk_size)
+
+    def _queue_writes_for_stream(self, body):
+        # We have to handle an output stream differently.  The main reason is
+        # that we cannot seek() in the output stream.  This means that we need
+        # to queue the writes in order.  If we queue IO writes in smaller than
+        # part size chunks, on the case of a retry we'll need to do a range GET
+        # for only the remaining parts.  The other alternative, which is what
+        # we do here, is to just request the entire chunk size write.
+        self._context.wait_for_turn(self._part_number)
+        chunk = body.read()
+        offset = self._part_number * self._chunk_size
+        LOGGER.debug("Submitting IORequest to write queue.")
+        self._io_queue.put(
+            IORequest(self._filename.dest, offset, chunk,
+                      self._filename.is_stream)
+        )
+        self._context.done_with_turn()
+
+    def _queue_writes_in_chunks(self, body, iterate_chunk_size):
         amount_read = 0
         current = body.read(iterate_chunk_size)
-        if self._filename.is_stream:
-            self._context.wait_for_turn(self._part_number)
         while current:
             offset = self._part_number * self._chunk_size + amount_read
             LOGGER.debug("Submitting IORequest to write queue.")
@@ -418,8 +449,6 @@ class DownloadPartTask(OrderableTask):
         # Change log message.
         LOGGER.debug("Done queueing writes for part number %s to file: %s",
                      self._part_number, self._filename.dest)
-        if self._filename.is_stream:
-            self._context.done_with_turn()
 
 
 class CreateMultipartUploadTask(BasicTask):
@@ -457,10 +486,8 @@ class RemoveRemoteObjectTask(OrderableTask):
         LOGGER.debug("Waiting for download to finish.")
         self._context.wait_for_completion()
         bucket, key = find_bucket_key(self._filename.src)
-        params = {'endpoint': self._filename.source_endpoint,
-                  'bucket': bucket, 'key': key}
-        response_data, http = operate(
-            self._filename.service, 'DeleteObject', params)
+        params = {'Bucket': bucket, 'Key': key}
+        self._filename.source_client.delete_object(**params)
 
 
 class CompleteMultipartUploadTask(BasicTask):
@@ -478,13 +505,13 @@ class CompleteMultipartUploadTask(BasicTask):
         LOGGER.debug("Received upload id and parts list.")
         bucket, key = find_bucket_key(self.filename.dest)
         params = {
-            'bucket': bucket, 'key': key,
-            'endpoint': self.filename.endpoint,
-            'upload_id': upload_id,
-            'multipart_upload': {'Parts': parts},
+            'Bucket': bucket, 'Key': key,
+            'UploadId': upload_id,
+            'MultipartUpload': {'Parts': parts},
         }
         try:
-            operate(self.filename.service, 'CompleteMultipartUpload', params)
+            response_data = self.filename.client.complete_multipart_upload(
+                **params)
         except Exception as e:
             LOGGER.debug("Error trying to complete multipart upload: %s",
                          e, exc_info=True)

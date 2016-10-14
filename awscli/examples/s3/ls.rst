@@ -1,6 +1,6 @@
 The following ``ls`` command lists all of the bucket owned by the user.  In this example, the user owns the buckets
 ``mybucket`` and ``mybucket2``.  The ``CreationTime`` is the date the bucket was created.  Note if ``s3://`` is used for
-the path argument ``<S3Path>``, it will list all of the buckets as well::
+the path argument ``<S3Uri>``, it will list all of the buckets as well::
 
     aws s3 ls
 
@@ -11,7 +11,8 @@ Output::
 
 The following ``ls`` command lists objects and common prefixes under a spcified bucket and prefix.  In this example, the
 user owns the bucket ``mybucket`` with the objects ``test.txt`` and ``somePrefix/test.txt``.  The ``LastWriteTime`` and
-``Length`` are arbitrary::
+``Length`` are arbitrary. Note that since the ``ls`` command has no interaction with the local filesystem, the ``s3://``
+URI scheme is not required to resolve ambiguity and may be ommited::
 
     aws s3 ls s3://mybucket
 
@@ -48,3 +49,25 @@ Output::
     2013-09-02 21:32:57        189 foo/bar/.baz/hooks/foo
     2013-09-02 21:32:57        398 z.txt
 
+The following ``ls`` command demonstrates the same command using the --human-readable
+and --summarize options. --human-readable displays file size in
+Bytes/MiB/KiB/GiB/TiB/PiB/EiB. --summarize displays the total number of objects
+and total size at the end of the result listing::
+
+    aws s3 ls s3://mybucket --recursive --human-readable --summarize
+
+Output::
+
+    2013-09-02 21:37:53   10 Bytes a.txt
+    2013-09-02 21:37:53  2.9 MiB foo.zip
+    2013-09-02 21:32:57   23 Bytes foo/bar/.baz/a
+    2013-09-02 21:32:58   41 Bytes foo/bar/.baz/b
+    2013-09-02 21:32:57  281 Bytes foo/bar/.baz/c
+    2013-09-02 21:32:57   73 Bytes foo/bar/.baz/d
+    2013-09-02 21:32:57  452 Bytes foo/bar/.baz/e
+    2013-09-02 21:32:57  896 Bytes foo/bar/.baz/hooks/bar
+    2013-09-02 21:32:57  189 Bytes foo/bar/.baz/hooks/foo
+    2013-09-02 21:32:57  398 Bytes z.txt
+
+    Total Objects: 10
+       Total Size: 2.9 MiB

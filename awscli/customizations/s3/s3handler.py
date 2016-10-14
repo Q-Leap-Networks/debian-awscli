@@ -16,20 +16,22 @@ import math
 import os
 import sys
 
-from awscli.customizations.s3.constants import MULTI_THRESHOLD, CHUNKSIZE, \
-    NUM_THREADS, MAX_UPLOAD_SIZE, MAX_QUEUE_SIZE
 from awscli.customizations.s3.utils import find_chunksize, \
-    operate, find_bucket_key, relative_path, PrintTask, create_warning
+    find_bucket_key, relative_path, PrintTask, create_warning
 from awscli.customizations.s3.executor import Executor
 from awscli.customizations.s3 import tasks
+from awscli.customizations.s3.transferconfig import RuntimeConfig
 from awscli.compat import six
 from awscli.compat import queue
 
 
 LOGGER = logging.getLogger(__name__)
+# Maximum object size allowed in S3.
+# See: http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
+MAX_UPLOAD_SIZE = 5 * (1024 ** 4)
 
 CommandResult = namedtuple('CommandResult',
-                           ['num_tasks_failed', 'num_tasks_warned']) 
+                           ['num_tasks_failed', 'num_tasks_warned'])
 
 
 class S3Handler(object):
@@ -39,12 +41,13 @@ class S3Handler(object):
     class pull tasks from to complete.
     """
     MAX_IO_QUEUE_SIZE = 20
-    MAX_EXECUTOR_QUEUE_SIZE = MAX_QUEUE_SIZE
-    EXECUTOR_NUM_THREADS = NUM_THREADS
 
     def __init__(self, session, params, result_queue=None,
-                 multi_threshold=MULTI_THRESHOLD, chunksize=CHUNKSIZE):
+                 runtime_config=None):
         self.session = session
+        if runtime_config is None:
+            runtime_config = RuntimeConfig.defaults()
+        self._runtime_config = runtime_config
         # The write_queue has potential for optimizations, so the constant
         # for maxsize is scoped to this class (as opposed to constants.py)
         # so we have the ability to change this value later.
@@ -52,27 +55,33 @@ class S3Handler(object):
         self.result_queue = result_queue
         if not self.result_queue:
             self.result_queue = queue.Queue()
-        self.params = {'dryrun': False, 'quiet': False, 'acl': None,
-                       'guess_mime_type': True, 'sse': False,
-                       'storage_class': None, 'website_redirect': None,
-                       'content_type': None, 'cache_control': None,
-                       'content_disposition': None, 'content_encoding': None,
-                       'content_language': None, 'expires': None,
-                       'grants': None, 'only_show_errors': False,
-                       'is_stream': False, 'paths_type': None,
-                       'expected_size': None}
+        self.params = {
+            'dryrun': False, 'quiet': False, 'acl': None,
+            'guess_mime_type': True, 'sse_c_copy_source': None,
+            'sse_c_copy_source_key': None, 'sse': None,
+            'sse_c': None, 'sse_c_key': None, 'sse_kms_key_id': None,
+            'storage_class': None, 'website_redirect': None,
+            'content_type': None, 'cache_control': None,
+            'content_disposition': None, 'content_encoding': None,
+            'content_language': None, 'expires': None, 'grants': None,
+            'only_show_errors': False, 'is_stream': False,
+            'paths_type': None, 'expected_size': None,
+            'metadata_directive': None, 'ignore_glacier_warnings': False
+        }
         self.params['region'] = params['region']
         for key in self.params.keys():
             if key in params:
                 self.params[key] = params[key]
-        self.multi_threshold = multi_threshold
-        self.chunksize = chunksize
+        self.multi_threshold = self._runtime_config['multipart_threshold']
+        self.chunksize = self._runtime_config['multipart_chunksize']
+        LOGGER.debug("Using a multipart threshold of %s and a part size of %s",
+                     self.multi_threshold, self.chunksize)
         self.executor = Executor(
-            num_threads=self.EXECUTOR_NUM_THREADS,
+            num_threads=self._runtime_config['max_concurrent_requests'],
             result_queue=self.result_queue,
             quiet=self.params['quiet'],
             only_show_errors=self.params['only_show_errors'],
-            max_queue_size=self.MAX_EXECUTOR_QUEUE_SIZE,
+            max_queue_size=self._runtime_config['max_queue_size'],
             write_queue=self.write_queue
         )
         self._multipart_uploads = []
@@ -111,7 +120,6 @@ class S3Handler(object):
                 priority=self.executor.IMMEDIATE_PRIORITY)
             self._shutdown()
             self.executor.wait_until_shutdown()
-        
         return CommandResult(self.executor.num_tasks_failed,
                              self.executor.num_tasks_warned)
 
@@ -158,14 +166,12 @@ class S3Handler(object):
     def _cancel_upload(self, upload_id, filename):
         bucket, key = find_bucket_key(filename.dest)
         params = {
-            'bucket': bucket,
-            'key': key,
-            'upload_id': upload_id,
-            'endpoint': filename.endpoint,
+            'Bucket': bucket,
+            'Key': key,
+            'UploadId': upload_id,
         }
         LOGGER.debug("Aborting multipart upload for: %s", key)
-        response_data, http = operate(
-            filename.service, 'AbortMultipartUpload', params)
+        filename.client.abort_multipart_upload(**params)
 
     def _enqueue_tasks(self, files):
         total_files = 0
@@ -181,6 +187,22 @@ class S3Handler(object):
                 warning = create_warning(relative_path(filename.src),
                                          message=warning_message)
                 self.result_queue.put(warning)
+            # Warn and skip over glacier incompatible tasks.
+            elif not filename.is_glacier_compatible():
+                LOGGER.debug(
+                    'Encountered glacier object s3://%s. Not performing '
+                    '%s on object.' % (filename.src, filename.operation_name))
+                if not self.params['ignore_glacier_warnings']:
+                    warning = create_warning(
+                        's3://'+filename.src,
+                        'Object is of storage class GLACIER. Unable to '
+                        'perform %s operations on GLACIER objects. You must '
+                        'restore the object to be able to the perform '
+                        'operation.' %
+                        filename.operation_name
+                    )
+                    self.result_queue.put(warning)
+                continue
             elif is_multipart_task and not self.params['dryrun']:
                 # If we're in dryrun mode, then we don't need the
                 # real multipart tasks.  We can just use a BasicTask
@@ -241,8 +263,9 @@ class S3Handler(object):
         chunksize = find_chunksize(filename.size, self.chunksize)
         num_downloads = int(filename.size / chunksize)
         context = tasks.MultipartDownloadContext(num_downloads)
-        create_file_task = tasks.CreateLocalFileTask(context=context,
-                                                     filename=filename)
+        create_file_task = tasks.CreateLocalFileTask(
+            context=context, filename=filename,
+            result_queue=self.result_queue)
         self.executor.submit(create_file_task)
         self._do_enqueue_range_download_tasks(
             filename=filename, chunksize=chunksize,
@@ -266,8 +289,9 @@ class S3Handler(object):
         for i in range(num_downloads):
             task = tasks.DownloadPartTask(
                 part_number=i, chunk_size=chunksize,
-                result_queue=self.result_queue, service=filename.service,
-                filename=filename, context=context, io_queue=self.write_queue)
+                result_queue=self.result_queue, filename=filename,
+                context=context, io_queue=self.write_queue,
+                params=self.params)
             self.executor.submit(task)
 
     def _enqueue_multipart_upload_tasks(self, filename,
@@ -330,7 +354,8 @@ class S3Handler(object):
                                          payload=None):
         kwargs = {'part_number': part_number, 'chunk_size': chunk_size,
                   'result_queue': self.result_queue,
-                  'upload_context': upload_context, 'filename': filename}
+                  'upload_context': upload_context, 'filename': filename,
+                  'params': self.params}
         if payload:
             kwargs['payload'] = payload
         task = task_class(**kwargs)
@@ -350,11 +375,22 @@ class S3StreamHandler(S3Handler):
     involves a stream since the logic is different when uploading and
     downloading streams.
     """
-
     # This ensures that the number of multipart chunks waiting in the
     # executor queue and in the threads is limited.
     MAX_EXECUTOR_QUEUE_SIZE = 2
     EXECUTOR_NUM_THREADS = 6
+
+    def __init__(self, session, params, result_queue=None,
+                 runtime_config=None):
+        if runtime_config is None:
+            # Rather than using the .defaults(), streaming
+            # has different default values so that it does not
+            # consume large amounts of memory.
+            runtime_config = RuntimeConfig().build_config(
+                max_queue_size=self.MAX_EXECUTOR_QUEUE_SIZE,
+                max_concurrent_requests=self.EXECUTOR_NUM_THREADS)
+        super(S3StreamHandler, self).__init__(session, params, result_queue,
+                                              runtime_config)
 
     def _enqueue_tasks(self, files):
         total_files = 0
@@ -490,7 +526,7 @@ class S3StreamHandler(S3Handler):
                 task_class=task_class,
                 payload=payload
             )
-            num_uploads += 1 
+            num_uploads += 1
             if not is_remaining:
                 break
         # Once there is no more data left, announce to the context how

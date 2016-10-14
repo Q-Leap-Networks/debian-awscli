@@ -10,12 +10,13 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
+import os
 import logging
 import sys
 import threading
 
 from awscli.customizations.s3.utils import uni_print, bytes_print, \
-    IORequest, IOCloseRequest, StablePriorityQueue
+    IORequest, IOCloseRequest, StablePriorityQueue, set_file_utime
 from awscli.customizations.s3.tasks import OrderableTask
 from awscli.compat import queue
 
@@ -38,11 +39,13 @@ class Executor(object):
     ``Executor``runs is a worker and a print thread.
     """
     STANDARD_PRIORITY = 11
-    IMMEDIATE_PRIORITY= 1
+    IMMEDIATE_PRIORITY = 1
 
     def __init__(self, num_threads, result_queue, quiet,
                  only_show_errors, max_queue_size, write_queue):
         self._max_queue_size = max_queue_size
+        LOGGER.debug("Using max queue size for s3 tasks of: %s",
+                     self._max_queue_size)
         self.queue = StablePriorityQueue(maxsize=self._max_queue_size,
                                          max_priority=20)
         self.num_threads = num_threads
@@ -77,6 +80,7 @@ class Executor(object):
         # explicit about it rather than relying on the threads_list order.
         # See .join() for more info.
         self.print_thread.start()
+        LOGGER.debug("Using a threadpool size of: %s", self.num_threads)
         for i in range(self.num_threads):
             worker = Worker(queue=self.queue)
             worker.setDaemon(True)
@@ -153,28 +157,46 @@ class IOWriterThread(threading.Thread):
                              "shutting down.")
                 self._cleanup()
                 return
-            elif isinstance(task, IORequest):
-                filename, offset, data, is_stream = task
-                if is_stream:
-                    fileobj = sys.stdout
-                    bytes_print(data)
-                else:
-                    fileobj = self.fd_descriptor_cache.get(filename)
-                    if fileobj is None:
-                        fileobj = open(filename, 'rb+')
-                        self.fd_descriptor_cache[filename] = fileobj
-                    fileobj.seek(offset)
-                    fileobj.write(data)
-                LOGGER.debug("Writing data to: %s, offset: %s",
-                             filename, offset)
-                fileobj.flush()
-            elif isinstance(task, IOCloseRequest):
-                LOGGER.debug("IOCloseRequest received for %s, closing file.",
-                             task.filename)
-                fileobj = self.fd_descriptor_cache.get(task.filename)
-                if fileobj is not None:
-                    fileobj.close()
-                    del self.fd_descriptor_cache[task.filename]
+            try:
+                self._handle_task(task)
+            except Exception as e:
+                LOGGER.debug(
+                    "Error processing IO request: %s", e, exc_info=True)
+
+    def _handle_task(self, task):
+        if isinstance(task, IORequest):
+            filename, offset, data, is_stream = task
+            if is_stream:
+                self._handle_stream_task(data)
+            else:
+                self._handle_file_write_task(filename, offset, data)
+        elif isinstance(task, IOCloseRequest):
+            self._handle_io_close_request(task)
+
+    def _handle_io_close_request(self, task):
+        LOGGER.debug("IOCloseRequest received for %s, closing file.",
+                     task.filename)
+        fileobj = self.fd_descriptor_cache.get(task.filename)
+        if fileobj is not None:
+            fileobj.close()
+            del self.fd_descriptor_cache[task.filename]
+        if task.desired_mtime is not None:
+            set_file_utime(task.filename, task.desired_mtime)
+
+    def _handle_stream_task(self, data):
+        fileobj = sys.stdout
+        bytes_print(data)
+        fileobj.flush()
+
+    def _handle_file_write_task(self, filename, offset, data):
+        fileobj = self.fd_descriptor_cache.get(filename)
+        if fileobj is None:
+            fileobj = open(filename, 'rb+')
+            self.fd_descriptor_cache[filename] = fileobj
+        LOGGER.debug("Writing data to: %s, offset: %s",
+                     filename, offset)
+        fileobj.seek(offset)
+        fileobj.write(data)
 
     def _cleanup(self):
         for fileobj in self.fd_descriptor_cache.values():

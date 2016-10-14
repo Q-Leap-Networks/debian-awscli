@@ -15,6 +15,7 @@ from datetime import datetime
 import mimetypes
 import hashlib
 import math
+import errno
 import os
 import sys
 from collections import namedtuple, deque
@@ -24,11 +25,88 @@ from dateutil.parser import parse
 from dateutil.tz import tzlocal
 from botocore.compat import unquote_str
 
-from awscli.customizations.s3.constants import MAX_PARTS
-from awscli.customizations.s3.constants import MAX_SINGLE_UPLOAD_SIZE
 from awscli.compat import six
 from awscli.compat import PY3
 from awscli.compat import queue
+
+
+HUMANIZE_SUFFIXES = ('KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB')
+MAX_PARTS = 10000
+# The maximum file size you can upload via S3 per request.
+# See: http://docs.aws.amazon.com/AmazonS3/latest/dev/UploadingObjects.html
+# and: http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
+MAX_SINGLE_UPLOAD_SIZE = 5 * (1024 ** 3)
+SIZE_SUFFIX = {
+    'kb': 1024,
+    'mb': 1024 ** 2,
+    'gb': 1024 ** 3,
+    'tb': 1024 ** 4,
+    'kib': 1024,
+    'mib': 1024 ** 2,
+    'gib': 1024 ** 3,
+    'tib': 1024 ** 4,
+}
+
+
+
+def human_readable_size(value):
+    """Convert an size in bytes into a human readable format.
+
+    For example::
+
+        >>> human_readable_size(1)
+        '1 Byte'
+        >>> human_readable_size(10)
+        '10 Bytes'
+        >>> human_readable_size(1024)
+        '1.0 KiB'
+        >>> human_readable_size(1024 * 1024)
+        '1.0 MiB'
+
+    :param value: The size in bytes
+    :return: The size in a human readable format based on base-2 units.
+
+    """
+    one_decimal_point = '%.1f'
+    base = 1024
+    bytes_int = float(value)
+
+    if bytes_int == 1:
+        return '1 Byte'
+    elif bytes_int < base:
+        return '%d Bytes' % bytes_int
+
+    for i, suffix in enumerate(HUMANIZE_SUFFIXES):
+        unit = base ** (i+2)
+        if round((bytes_int / unit) * base) < base:
+            return '%.1f %s' % ((base * bytes_int / unit), suffix)
+
+
+def human_readable_to_bytes(value):
+    """Converts a human readable size to bytes.
+
+    :param value: A string such as "10MB".  If a suffix is not included,
+        then the value is assumed to be an integer representing the size
+        in bytes.
+    :returns: The converted value in bytes as an integer
+
+    """
+    value = value.lower()
+    if value[-2:] == 'ib':
+        # Assume IEC suffix.
+        suffix = value[-3:].lower()
+    else:
+        suffix = value[-2:].lower()
+    has_size_identifier = (
+        len(value) >= 2 and suffix in SIZE_SUFFIX)
+    if not has_size_identifier:
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError("Invalid size value: %s" % value)
+    else:
+        multiplier = SIZE_SUFFIX[suffix]
+        return int(value[:-len(suffix)]) * multiplier
 
 
 class AppendFilter(argparse.Action):
@@ -174,31 +252,6 @@ def find_dest_path_comp_key(files, src_path=None):
     return dest_path, compare_key
 
 
-def check_etag(etag, fileobj):
-    """
-    This fucntion checks the etag and the md5 checksum to ensure no
-    data was corrupted upon transfer.
-    """
-    get_chunk = partial(fileobj.read, 1024 * 1024)
-    m = hashlib.md5()
-    for chunk in iter(get_chunk, b''):
-        m.update(chunk)
-    if '-' not in etag:
-        if etag != m.hexdigest():
-            raise MD5Error
-
-
-def check_error(response_data):
-    """
-    A helper function that prints out the error message recieved in the
-    response_data and raises an error when there is an error.
-    """
-    if response_data:
-        if 'Error' in response_data:
-            error = response_data['Error']
-            raise Exception("Error: %s\n" % error['Message'])
-
-
 def create_warning(path, error_message):
     """
     This creates a ``PrintTask`` for whenever a warning is to be thrown.
@@ -209,18 +262,6 @@ def create_warning(path, error_message):
     warning_message = PrintTask(message=print_string, error=False,
                                 warning=True)
     return warning_message
-
-
-def operate(service, cmd, kwargs):
-    """
-    A helper function that universally calls any command by taking in the
-    service, name of the command, and any additional parameters required in
-    the call.
-    """
-    operation = service.get_operation(cmd)
-    http_response, response_data = operation.call(**kwargs)
-    check_error(response_data)
-    return response_data, http_response
 
 
 def find_chunksize(size, current_chunksize):
@@ -313,6 +354,30 @@ def relative_path(filename, start=os.path.curdir):
         return os.path.abspath(filename)
 
 
+def set_file_utime(filename, desired_time):
+    """
+    Set the utime of a file, and if it fails, raise a more explicit error.
+
+    :param filename: the file to modify
+    :param desired_time: the epoch timestamp to set for atime and mtime.
+    :raises: SetFileUtimeError: if you do not have permission (errno 1)
+    :raises: OSError: for all errors other than errno 1
+    """
+    try:
+        os.utime(filename, (desired_time, desired_time))
+    except OSError as e:
+        # Only raise a more explicit exception when it is a permission issue.
+        if e.errno != errno.EPERM:
+            raise e
+        raise SetFileUtimeError(
+            ("The file was downloaded, but attempting to modify the "
+             "utime of the file failed. Is the file owned by another user?"))
+
+
+class SetFileUtimeError(Exception):
+    pass
+
+
 class ReadFileChunk(object):
     def __init__(self, filename, start_byte, size):
         self._filename = filename
@@ -379,33 +444,32 @@ def _date_parser(date_string):
 
 class BucketLister(object):
     """List keys in a bucket."""
-    def __init__(self, operation, endpoint, date_parser=_date_parser):
-        self._operation = operation
-        self._endpoint = endpoint
+    def __init__(self, client, date_parser=_date_parser):
+        self._client = client
         self._date_parser = date_parser
 
     def list_objects(self, bucket, prefix=None, page_size=None):
-        kwargs = {'bucket': bucket, 'encoding_type': 'url',
-                  'page_size': page_size}
+        kwargs = {'Bucket': bucket, 'EncodingType': 'url',
+                  'PaginationConfig': {'PageSize': page_size}}
         if prefix is not None:
-            kwargs['prefix'] = prefix
+            kwargs['Prefix'] = prefix
         # This event handler is needed because we use encoding_type url and
         # we're paginating.  The pagination token is the last Key of the
         # Contents list.  However, botocore does not know that the encoding
         # type needs to be urldecoded.
-        with ScopedEventHandler(self._operation.session,
+        with ScopedEventHandler(self._client.meta.events,
                                 'after-call.s3.ListObjects',
                                 self._decode_keys,
-                                'BucketListerDecodeKeys',
-                                True):
-            pages = self._operation.paginate(self._endpoint, **kwargs)
-            for response, page in pages:
+                                'BucketListerDecodeKeys'):
+            paginator = self._client.get_paginator('list_objects')
+            pages = paginator.paginate(**kwargs)
+            for page in pages:
                 contents = page.get('Contents', [])
                 for content in contents:
                     source_path = bucket + '/' + content['Key']
-                    size = content['Size']
-                    last_update = self._date_parser(content['LastModified'])
-                    yield source_path, size, last_update
+                    content['LastModified'] = self._date_parser(
+                        content['LastModified'])
+                    yield source_path, content
 
     def _decode_keys(self, parsed, **kwargs):
         if 'Contents' in parsed:
@@ -416,22 +480,19 @@ class BucketLister(object):
 class ScopedEventHandler(object):
     """Register an event callback for the duration of a scope."""
 
-    def __init__(self, session, event_name, handler, unique_id=None,
-                 unique_id_uses_count=False):
-        self._session = session
+    def __init__(self, event_emitter, event_name, handler, unique_id=None):
+        self._event_emitter = event_emitter
         self._event_name = event_name
         self._handler = handler
         self._unique_id = unique_id
-        self._unique_id_uses_count = unique_id_uses_count
 
     def __enter__(self):
-        self._session.register(self._event_name, self._handler, self._unique_id,
-                               self._unique_id_uses_count)
+        self._event_emitter.register(self._event_name, self._handler,
+                                     self._unique_id)
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._session.unregister(self._event_name, self._handler,
-                                 self._unique_id,
-                                 self._unique_id_uses_count)
+        self._event_emitter.unregister(self._event_name, self._handler,
+                                       self._unique_id)
 
 
 class PrintTask(namedtuple('PrintTask',
@@ -452,4 +513,159 @@ IORequest = namedtuple('IORequest',
                        ['filename', 'offset', 'data', 'is_stream'])
 # Used to signal that IO for the filename is finished, and that
 # any associated resources may be cleaned up.
-IOCloseRequest = namedtuple('IOCloseRequest', ['filename'])
+_IOCloseRequest = namedtuple('IOCloseRequest', ['filename', 'desired_mtime'])
+class IOCloseRequest(_IOCloseRequest):
+    def __new__(cls, filename, desired_mtime=None):
+        return super(IOCloseRequest, cls).__new__(cls, filename, desired_mtime)
+
+
+class RequestParamsMapper(object):
+    """A utility class that maps CLI params to request params
+
+    Each method in the class maps to a particular operation and will set
+    the request parameters depending on the operation and CLI parameters
+    provided. For each of the class's methods the parameters are as follows:
+
+    :type request_params: dict
+    :param request_params: A dictionary to be filled out with the appropriate
+        parameters for the specified client operation using the current CLI
+        parameters
+
+    :type cli_params: dict
+    :param cli_params: A dictionary of the current CLI params that will be
+        used to generate the request parameters for the specified operation
+
+    For example, take the mapping of request parameters for PutObject::
+
+        >>> cli_request_params = {'sse': 'AES256', 'storage_class': 'GLACIER'}
+        >>> request_params = {}
+        >>> RequestParamsMapper.map_put_object_params(
+                request_params, cli_request_params)
+        >>> print(request_params)
+        {'StorageClass': 'GLACIER', 'ServerSideEncryption': 'AES256'}
+
+    Note that existing parameters in ``request_params`` will be overriden if
+    a parameter in ``cli_params`` maps to the existing parameter.
+    """
+    @classmethod
+    def map_put_object_params(cls, request_params, cli_params):
+        """Map CLI params to PutObject request params"""
+        cls._set_general_object_params(request_params, cli_params)
+        cls._set_sse_request_params(request_params, cli_params)
+        cls._set_sse_c_request_params(request_params, cli_params)
+
+    @classmethod
+    def map_get_object_params(cls, request_params, cli_params):
+        """Map CLI params to GetObject request params"""
+        cls._set_sse_c_request_params(request_params, cli_params)
+
+    @classmethod
+    def map_copy_object_params(cls, request_params, cli_params):
+        """Map CLI params to CopyObject request params"""
+        cls._set_general_object_params(request_params, cli_params)
+        cls._set_metadata_directive_param(request_params, cli_params)
+        cls._set_sse_request_params(request_params, cli_params)
+        cls._set_sse_c_and_copy_source_request_params(
+            request_params, cli_params)
+
+    @classmethod
+    def map_head_object_params(cls, request_params, cli_params):
+        """Map CLI params to HeadObject request params"""
+        cls._set_sse_c_request_params(request_params, cli_params)
+
+    @classmethod
+    def map_create_multipart_upload_params(cls, request_params, cli_params):
+        """Map CLI params to CreateMultipartUpload request params"""
+        cls._set_general_object_params(request_params, cli_params)
+        cls._set_sse_request_params(request_params, cli_params)
+        cls._set_sse_c_request_params(request_params, cli_params)
+
+    @classmethod
+    def map_upload_part_params(cls, request_params, cli_params):
+        """Map CLI params to UploadPart request params"""
+        cls._set_sse_c_request_params(request_params, cli_params)
+
+    @classmethod
+    def map_upload_part_copy_params(cls, request_params, cli_params):
+        """Map CLI params to UploadPartCopy request params"""
+        cls._set_sse_c_and_copy_source_request_params(
+            request_params, cli_params)
+
+    @classmethod
+    def _set_general_object_params(cls, request_params, cli_params):
+        # Paramters set in this method should be applicable to the following
+        # operations involving objects: PutObject, CopyObject, and
+        # CreateMultipartUpload.
+        general_param_translation = {
+            'acl': 'ACL',
+            'storage_class': 'StorageClass',
+            'website_redirect': 'WebsiteRedirectLocation',
+            'content_type': 'ContentType',
+            'cache_control': 'CacheControl',
+            'content_disposition': 'ContentDisposition',
+            'content_encoding': 'ContentEncoding',
+            'content_language': 'ContentLanguage',
+            'expires': 'Expires'
+        }
+        for cli_param_name in general_param_translation:
+            if cli_params.get(cli_param_name):
+                request_param_name = general_param_translation[cli_param_name]
+                request_params[request_param_name] = cli_params[cli_param_name]
+        cls._set_grant_params(request_params, cli_params)
+
+    @classmethod
+    def _set_grant_params(cls, request_params, cli_params):
+        if cli_params.get('grants'):
+            for grant in cli_params['grants']:
+                try:
+                    permission, grantee = grant.split('=', 1)
+                except ValueError:
+                    raise ValueError('grants should be of the form '
+                                     'permission=principal')
+                request_params[cls._permission_to_param(permission)] = grantee
+
+    @classmethod
+    def _permission_to_param(cls, permission):
+        if permission == 'read':
+            return 'GrantRead'
+        if permission == 'full':
+            return 'GrantFullControl'
+        if permission == 'readacl':
+            return 'GrantReadACP'
+        if permission == 'writeacl':
+            return 'GrantWriteACP'
+        raise ValueError('permission must be one of: '
+                         'read|readacl|writeacl|full')
+
+    @classmethod
+    def _set_metadata_directive_param(cls, request_params, cli_params):
+        if cli_params.get('metadata_directive'):
+            request_params['MetadataDirective'] = cli_params[
+                'metadata_directive']
+
+    @classmethod
+    def _set_sse_request_params(cls, request_params, cli_params):
+        if cli_params.get('sse'):
+            request_params['ServerSideEncryption'] = cli_params['sse']
+        if  cli_params.get('sse_kms_key_id'):
+            request_params['SSEKMSKeyId'] = cli_params['sse_kms_key_id']
+
+    @classmethod
+    def _set_sse_c_request_params(cls, request_params, cli_params):
+        if cli_params.get('sse_c'):
+            request_params['SSECustomerAlgorithm'] = cli_params['sse_c']
+            request_params['SSECustomerKey'] = cli_params['sse_c_key']
+
+    @classmethod
+    def _set_sse_c_copy_source_request_params(cls, request_params, cli_params):
+        if cli_params.get('sse_c_copy_source'):
+            request_params['CopySourceSSECustomerAlgorithm'] = cli_params[
+                'sse_c_copy_source']
+            request_params['CopySourceSSECustomerKey'] = cli_params[
+                'sse_c_copy_source_key']
+
+    @classmethod
+    def _set_sse_c_and_copy_source_request_params(cls, request_params,
+                                                  cli_params):
+        cls._set_sse_c_request_params(request_params, cli_params)
+        cls._set_sse_c_copy_source_request_params(request_params, cli_params)

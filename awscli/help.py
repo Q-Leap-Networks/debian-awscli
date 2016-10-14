@@ -1,4 +1,4 @@
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You
 # may not use this file except in compliance with the License. A copy of
@@ -10,7 +10,6 @@
 # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
 # ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
-import sys
 import logging
 import os
 import platform
@@ -20,14 +19,19 @@ from subprocess import Popen, PIPE
 from docutils.core import publish_string
 from docutils.writers import manpage
 
-import bcdoc.docevents
-from bcdoc.restdoc import ReSTDocument
-from bcdoc.textwriter import TextWriter
+from botocore.docs.bcdoc import docevents
+from botocore.docs.bcdoc.restdoc import ReSTDocument
+from botocore.docs.bcdoc.textwriter import TextWriter
 
 from awscli.clidocs import ProviderDocumentEventHandler
 from awscli.clidocs import ServiceDocumentEventHandler
 from awscli.clidocs import OperationDocumentEventHandler
+from awscli.clidocs import TopicListerDocumentEventHandler
+from awscli.clidocs import TopicDocumentEventHandler
 from awscli.argprocess import ParamShorthand
+from awscli.argparser import ArgTableArgParser
+from awscli.topictags import TopicTagDB
+from awscli.utils import ignore_ctrl_c
 
 
 LOG = logging.getLogger('awscli.help')
@@ -50,29 +54,16 @@ def get_renderer():
         return PosixHelpRenderer()
 
 
-class HelpRenderer(object):
+class PagingHelpRenderer(object):
     """
     Interface for a help renderer.
 
     The renderer is responsible for displaying the help content on
     a particular platform.
+
     """
 
-    def render(self, contents):
-        """
-        Each implementation of HelpRenderer must implement this
-        render method.
-        """
-        pass
-
-
-class PosixHelpRenderer(HelpRenderer):
-    """
-    Render help content on a Posix-like system.  This includes
-    Linux and MacOS X.
-    """
-
-    PAGER = 'less -R'
+    PAGER = None
 
     def get_pager_cmdline(self):
         pager = self.PAGER
@@ -83,6 +74,35 @@ class PosixHelpRenderer(HelpRenderer):
         return shlex.split(pager)
 
     def render(self, contents):
+        """
+        Each implementation of HelpRenderer must implement this
+        render method.
+        """
+        converted_content = self._convert_doc_content(contents)
+        self._send_output_to_pager(converted_content)
+
+    def _send_output_to_pager(self, output):
+        cmdline = self.get_pager_cmdline()
+        LOG.debug("Running command: %s", cmdline)
+        p = self._popen(cmdline, stdin=PIPE)
+        p.communicate(input=output)
+
+    def _popen(self, *args, **kwargs):
+        return Popen(*args, **kwargs)
+
+    def _convert_doc_content(self, contents):
+        return contents
+
+
+class PosixHelpRenderer(PagingHelpRenderer):
+    """
+    Render help content on a Posix-like system.  This includes
+    Linux and MacOS X.
+    """
+
+    PAGER = 'less -R'
+
+    def _convert_doc_content(self, contents):
         man_contents = publish_string(contents, writer=manpage.Writer())
         if not self._exists_on_path('groff'):
             raise ExecutableNotFoundError('groff')
@@ -90,25 +110,25 @@ class PosixHelpRenderer(HelpRenderer):
         LOG.debug("Running command: %s", cmdline)
         p3 = self._popen(cmdline, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         groff_output = p3.communicate(input=man_contents)[0]
+        return groff_output
+
+    def _send_output_to_pager(self, output):
         cmdline = self.get_pager_cmdline()
         LOG.debug("Running command: %s", cmdline)
-        p4 = self._popen(cmdline, stdin=PIPE)
-        p4.communicate(input=groff_output)
-        sys.exit(1)
-
-    def _get_rst2man_name(self):
-        if self._exists_on_path('rst2man.py'):
-            return 'rst2man.py'
-        elif self._exists_on_path('rst2man'):
-            # Some distros like ubuntu will rename rst2man.py to rst2man
-            # if you install their version (i.e. "apt-get install
-            # python-docutils").  Though they could technically rename
-            # this to anything we'll support it renamed to 'rst2man' by
-            # explicitly checking for this case ourself.
-            return 'rst2man'
-        else:
-            # Give them the original name as set from docutils.
-            raise ExecutableNotFoundError('rst2man.py')
+        with ignore_ctrl_c():
+            # We can't rely on the KeyboardInterrupt from
+            # the CLIDriver being caught because when we
+            # send the output to a pager it will use various
+            # control characters that need to be cleaned
+            # up gracefully.  Otherwise if we simply catch
+            # the Ctrl-C and exit, it will likely leave the
+            # users terminals in a bad state and they'll need
+            # to manually run ``reset`` to fix this issue.
+            # Ignoring Ctrl-C solves this issue.  It's also
+            # the default behavior of less (you can't ctrl-c
+            # out of a manpage).
+            p = self._popen(cmdline, stdin=PIPE)
+            p.communicate(input=output)
 
     def _exists_on_path(self, name):
         # Since we're only dealing with POSIX systems, we can
@@ -116,30 +136,22 @@ class PosixHelpRenderer(HelpRenderer):
         return any([os.path.exists(os.path.join(p, name))
                     for p in os.environ.get('PATH', '').split(os.pathsep)])
 
-    def _popen(self, *args, **kwargs):
-        return Popen(*args, **kwargs)
 
+class WindowsHelpRenderer(PagingHelpRenderer):
+    """Render help content on a Windows platform."""
 
-class WindowsHelpRenderer(HelpRenderer):
-    """
-    Render help content on a Windows platform.
-    """
+    PAGER = 'more'
 
-    def render(self, contents):
+    def _convert_doc_content(self, contents):
         text_output = publish_string(contents,
                                      writer=TextWriter())
-        sys.stdout.write(text_output.decode('utf-8'))
-        sys.exit(1)
+        return text_output
 
-
-class RawRenderer(HelpRenderer):
-    """
-    Render help as the raw ReST document.
-    """
-
-    def render(self, contents):
-        sys.stdout.write(contents)
-        sys.exit(1)
+    def _popen(self, *args, **kwargs):
+        # Also set the shell value to True.  To get any of the
+        # piping to a pager to work, we need to use shell=True.
+        kwargs['shell'] = True
+        return Popen(*args, **kwargs)
 
 
 class HelpCommand(object):
@@ -195,6 +207,8 @@ class HelpCommand(object):
         if arg_table is None:
             arg_table = {}
         self.arg_table = arg_table
+        self._subcommand_table = {}
+        self._related_items = []
         self.renderer = get_renderer()
         self.doc = ReSTDocument(target='man')
 
@@ -223,13 +237,30 @@ class HelpCommand(object):
         """
         pass
 
+    @property
+    def subcommand_table(self):
+        """These are the commands that may follow after the help command"""
+        return self._subcommand_table
+
+    @property
+    def related_items(self):
+        """This is list of items that are related to the help command"""
+        return self._related_items
+
     def __call__(self, args, parsed_globals):
+        if args:
+            subcommand_parser = ArgTableArgParser({}, self.subcommand_table)
+            parsed, remaining = subcommand_parser.parse_known_args(args)
+            if getattr(parsed, 'subcommand', None) is not None:
+                return self.subcommand_table[parsed.subcommand](remaining,
+                                                                parsed_globals)
+
         # Create an event handler for a Provider Document
         instance = self.EventHandlerClass(self)
         # Now generate all of the events for a Provider document.
         # We pass ourselves along so that we can, in turn, get passed
         # to all event handlers.
-        bcdoc.docevents.generate_events(self.session, self)
+        docevents.generate_events(self.session, self)
         self.renderer.render(self.doc.getvalue())
         instance.unregister()
 
@@ -244,19 +275,44 @@ class ProviderHelpCommand(HelpCommand):
 
     def __init__(self, session, command_table, arg_table,
                  description, synopsis, usage):
-        HelpCommand.__init__(self, session, session.provider,
+        HelpCommand.__init__(self, session, None,
                              command_table, arg_table)
         self.description = description
         self.synopsis = synopsis
         self.help_usage = usage
+        self._subcommand_table = None
+        self._topic_tag_db = None
+        self._related_items = ['aws help topics']
 
     @property
     def event_class(self):
-        return 'Provider'
+        return 'aws'
 
     @property
     def name(self):
-        return self.obj.name
+        return 'aws'
+
+    @property
+    def subcommand_table(self):
+        if self._subcommand_table is None:
+            if self._topic_tag_db is None:
+                self._topic_tag_db = TopicTagDB()
+            self._topic_tag_db.load_json_index()
+            self._subcommand_table = self._create_subcommand_table()
+        return self._subcommand_table
+
+    def _create_subcommand_table(self):
+        subcommand_table = {}
+        # Add the ``aws help topics`` command to the ``topic_table``
+        topic_lister_command = TopicListerCommand(self.session)
+        subcommand_table['topics'] = topic_lister_command
+        topic_names = self._topic_tag_db.get_all_topic_names()
+
+        # Add all of the possible topics to the ``topic_table``
+        for topic_name in topic_names:
+            topic_help_command = TopicHelpCommand(self.session, topic_name)
+            subcommand_table[topic_name] = topic_help_command
+        return subcommand_table
 
 
 class ServiceHelpCommand(HelpCommand):
@@ -294,10 +350,9 @@ class OperationHelpCommand(HelpCommand):
     """
     EventHandlerClass = OperationDocumentEventHandler
 
-    def __init__(self, session, service, operation, arg_table, name,
+    def __init__(self, session, operation_model, arg_table, name,
                  event_class):
-        HelpCommand.__init__(self, session, operation, None, arg_table)
-        self.service = service
+        HelpCommand.__init__(self, session, operation_model, None, arg_table)
         self.param_shorthand = ParamShorthand()
         self._name = name
         self._event_class = event_class
@@ -309,3 +364,34 @@ class OperationHelpCommand(HelpCommand):
     @property
     def name(self):
         return self._name
+
+
+class TopicListerCommand(HelpCommand):
+    EventHandlerClass = TopicListerDocumentEventHandler
+
+    def __init__(self, session):
+        super(TopicListerCommand, self).__init__(session, None, {}, {})
+
+    @property
+    def event_class(self):
+        return 'topics'
+
+    @property
+    def name(self):
+        return 'topics'
+
+
+class TopicHelpCommand(HelpCommand):
+    EventHandlerClass = TopicDocumentEventHandler
+
+    def __init__(self, session, topic_name):
+        super(TopicHelpCommand, self).__init__(session, None, {}, {})
+        self._topic_name = topic_name
+
+    @property
+    def event_class(self):
+        return 'topics.' + self.name
+
+    @property
+    def name(self):
+        return self._topic_name

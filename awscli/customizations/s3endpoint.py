@@ -26,7 +26,7 @@ that messes with endpoint url.
 """
 from functools import partial
 
-from botocore.handlers import fix_s3_host
+from botocore.utils import fix_s3_host
 
 
 def register_s3_endpoint(cli):
@@ -42,4 +42,4 @@ def on_top_level_args_parsed(parsed_args, event_handler, **kwargs):
     # is disabled.
     if parsed_args.command in ['s3', 's3api'] and \
             parsed_args.endpoint_url is not None:
-        event_handler.unregister('before-auth.s3', fix_s3_host)
+        event_handler.unregister('before-sign.s3', fix_s3_host)
