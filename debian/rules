@@ -8,16 +8,17 @@
 	dh $@  --with python3 --buildsystem=pybuild
 
 override_dh_auto_install:
-	python3 setup.py install --root=debian/awscli --install-layout=deb \
-		--install-lib=/usr/share/awscli \
-		--install-scripts=/usr/share/awscli
-	mv $(CURDIR)/debian/awscli/usr/share/awscli/aws_zsh_completer.sh \
+	python3 setup.py install --root=debian/awscli --install-layout=deb
+	mv $(CURDIR)/debian/awscli/usr/bin/aws_bash_completer \
+	   $(CURDIR)/debian/awscli/usr/share/bash-completion/completions 
+	mv $(CURDIR)/debian/awscli/usr/bin/aws_zsh_completer.sh \
 	   $(CURDIR)/debian/awscli/usr/share/zsh/vendor-completions/_awscli
-	rm $(CURDIR)/debian/awscli/usr/share/awscli/aws.cmd
+	rm $(CURDIR)/debian/awscli/usr/bin/aws.cmd
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod -x $(CURDIR)/debian/awscli/usr/share/awscli/awscli/examples/*/*.rst
+	chmod -x $(CURDIR)/debian/awscli/usr/lib/python3/dist-packages/awscli/examples/*/*.rst
+	chmod -x $(CURDIR)/debian/awscli/usr/share/bash-completion/completions/aws_bash_completer
 	chmod -x $(CURDIR)/debian/awscli/usr/share/zsh/vendor-completions/_awscli
 # override_dh_auto_build:
 
