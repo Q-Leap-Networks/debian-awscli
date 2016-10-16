@@ -1,7 +1,7 @@
 Source: awscli
 Section: admin
 Priority: optional
-Maintainer: Python Applications Packaging Team <python-apps-team@lists.alioth.debian.org>
+Maintainer: Debian Python Modules Team <python-modules-team@lists.alioth.debian.org>
 Uploaders: TANIGUCHI Takaki <takaki@debian.org>
 Build-Depends: debhelper (>= 9)
 	, python3
