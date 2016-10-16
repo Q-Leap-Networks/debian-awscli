@@ -15,8 +15,8 @@ Build-Depends-Indep: python3-six
         , python3-rsa
 Standards-Version: 3.9.8
 Homepage: http://aws.amazon.com/cli/
-Vcs-Svn: svn://anonscm.debian.org/python-apps/packages/awscli/trunk/
-Vcs-Browser: http://anonscm.debian.org/viewvc/python-apps/packages/awscli/trunk/
+Vcs-Git: https://anonscm.debian.org/git/python-modules/packages/awscli.git
+Vcs-Browser: http://anonscm.debian.org/cgit/python-modules/packages/awscli.git
 X-Python3-Version: >= 3.3
 
 Package: awscli
