@@ -1,9 +1,12 @@
-awscli (1.11.2-1) UNRELEASED; urgency=medium
+awscli (1.11.2-1) unstable; urgency=medium
 
   * New upstream release
   * Bump Standards-Version to 3.9.8 
+  * debian/rules: Change to library style layout.
+  * debian/links: link from doc direcotory.
+  * debian/control: Move to under DPMT.
 
- -- TANIGUCHI Takaki <takaki@debian.org>  Wed, 12 Oct 2016 13:08:26 +0900
+ -- TANIGUCHI Takaki <takaki@debian.org>  Sun, 16 Oct 2016 19:05:50 +0900
 
 awscli (1.10.1-1) unstable; urgency=medium
 
