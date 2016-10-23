@@ -1,8 +1,8 @@
-awscli (1.11.7-2) UNRELEASED; urgency=medium
+awscli (1.11.7-2) unstable; urgency=medium
 
   * debian/control: add python3-s3tranfert to B-D. (Closes: #841064)
 
- -- TANIGUCHI Takaki <takaki@debian.org>  Sun, 23 Oct 2016 21:24:30 +0900
+ -- TANIGUCHI Takaki <takaki@debian.org>  Sun, 23 Oct 2016 21:31:02 +0900
 
 awscli (1.11.7-1) unstable; urgency=medium
 
