@@ -13,6 +13,7 @@ Build-Depends-Indep: python3-six
         , python3-bcdoc
         , python3-pyasn1
         , python3-rsa
+	, python3-s3transfer
 Standards-Version: 3.9.8
 Homepage: http://aws.amazon.com/cli/
 Vcs-Git: https://anonscm.debian.org/git/python-modules/packages/awscli.git
