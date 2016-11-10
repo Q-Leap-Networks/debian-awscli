@@ -137,7 +137,6 @@ awscli/customizations/gamelift/getlog.py
 awscli/customizations/gamelift/uploadbuild.py
 awscli/customizations/s3/__init__.py
 awscli/customizations/s3/comparator.py
-awscli/customizations/s3/executor.py
 awscli/customizations/s3/fileformat.py
 awscli/customizations/s3/filegenerator.py
 awscli/customizations/s3/fileinfo.py
@@ -147,7 +146,6 @@ awscli/customizations/s3/results.py
 awscli/customizations/s3/s3.py
 awscli/customizations/s3/s3handler.py
 awscli/customizations/s3/subcommands.py
-awscli/customizations/s3/tasks.py
 awscli/customizations/s3/transferconfig.py
 awscli/customizations/s3/utils.py
 awscli/customizations/s3/syncstrategy/__init__.py
