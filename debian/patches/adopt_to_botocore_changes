@@ -20,27 +20,11 @@ Forwarded: <no|not-needed|url proving that it has been forwarded>
 Reviewed-By: <name and email of someone who approved the patch>
 Last-Update: <YYYY-MM-DD>
 
-Index: awscli-1.9.9/awscli/customizations/s3/tasks.py
+Index: awscli/awscli/paramfile.py
 ===================================================================
---- awscli-1.9.9.orig/awscli/customizations/s3/tasks.py	2015-11-25 00:32:49.328220357 +0900
-+++ awscli-1.9.9/awscli/customizations/s3/tasks.py	2015-11-25 00:33:41.503521417 +0900
-@@ -5,9 +5,9 @@
- import socket
- import threading
- 
--from botocore.vendored import requests
-+import requests
- from botocore.exceptions import IncompleteReadError
--from botocore.vendored.requests.packages.urllib3.exceptions import \
-+from urllib3.exceptions import \
-     ReadTimeoutError
- 
- from awscli.customizations.s3.utils import find_bucket_key, MD5Error, \
-Index: awscli-1.9.9/awscli/paramfile.py
-===================================================================
---- awscli-1.9.9.orig/awscli/paramfile.py	2015-11-25 00:32:49.328220357 +0900
-+++ awscli-1.9.9/awscli/paramfile.py	2015-11-25 00:32:49.312220572 +0900
-@@ -14,7 +14,7 @@
+--- awscli.orig/awscli/paramfile.py	2016-11-10 19:46:28.010835528 +0900
++++ awscli/awscli/paramfile.py	2016-11-10 19:46:28.006835581 +0900
+@@ -13,7 +13,7 @@
  import logging
  import os
  
@@ -49,10 +33,10 @@ Index: awscli-1.9.9/awscli/paramfile.py
  from awscli.compat import six
  
  from awscli.compat import compat_open
-Index: awscli-1.9.9/awscli/testutils.py
+Index: awscli/awscli/testutils.py
 ===================================================================
---- awscli-1.9.9.orig/awscli/testutils.py	2015-11-25 00:32:49.328220357 +0900
-+++ awscli-1.9.9/awscli/testutils.py	2015-11-25 00:32:49.312220572 +0900
+--- awscli.orig/awscli/testutils.py	2016-11-10 19:46:28.010835528 +0900
++++ awscli/awscli/testutils.py	2016-11-10 19:46:28.006835581 +0900
 @@ -51,7 +51,7 @@
  from botocore.session import Session
  from botocore.exceptions import ClientError
@@ -62,10 +46,10 @@ Index: awscli-1.9.9/awscli/testutils.py
  
  import awscli.clidriver
  from awscli.plugin import load_plugins
-Index: awscli-1.9.9/awscli/customizations/awslambda.py
+Index: awscli/awscli/customizations/awslambda.py
 ===================================================================
---- awscli-1.9.9.orig/awscli/customizations/awslambda.py	2015-11-25 00:36:59.000000000 +0900
-+++ awscli-1.9.9/awscli/customizations/awslambda.py	2015-11-25 00:37:09.068741401 +0900
+--- awscli.orig/awscli/customizations/awslambda.py	2016-11-10 19:46:28.010835528 +0900
++++ awscli/awscli/customizations/awslambda.py	2016-11-10 19:46:28.006835581 +0900
 @@ -14,7 +14,7 @@
  import copy
  from contextlib import closing
