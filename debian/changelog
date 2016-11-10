@@ -1,8 +1,9 @@
-awscli (1.11.13-1) UNRELEASED; urgency=medium
+awscli (1.11.13-1) unstable; urgency=medium
 
   * New upstream version 1.11.13 (Closes: #819451)
+  * debian/patches: Refresh patches.
 
- -- TANIGUCHI Takaki <takaki@asis.media-as.org>  Thu, 10 Nov 2016 19:45:12 +0900
+ -- TANIGUCHI Takaki <takaki@debian.org>  Thu, 10 Nov 2016 19:50:29 +0900
 
 awscli (1.11.7-2) unstable; urgency=medium
 
