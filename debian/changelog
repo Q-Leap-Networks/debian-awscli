@@ -1,3 +1,9 @@
+awscli (1.11.13-1) UNRELEASED; urgency=medium
+
+  * New upstream version 1.11.13 (Closes: #819451)
+
+ -- TANIGUCHI Takaki <takaki@asis.media-as.org>  Thu, 10 Nov 2016 19:45:12 +0900
+
 awscli (1.11.7-2) unstable; urgency=medium
 
   * debian/control: add python3-s3tranfert to B-D. (Closes: #841064)
