@@ -1,6 +1,6 @@
 Metadata-Version: 1.1
 Name: awscli
-Version: 1.11.13
+Version: 1.11.44
 Summary: Universal Command Line Environment for AWS.
 Home-page: http://aws.amazon.com/cli/
 Author: Amazon Web Services
@@ -13,7 +13,7 @@ Description: =======
         .. image:: https://travis-ci.org/aws/aws-cli.svg?branch=develop
            :target: https://travis-ci.org/aws/aws-cli
            :alt: Build Status
-           
+        
         .. image:: https://badges.gitter.im/aws/aws-cli.svg
            :target: https://gitter.im/aws/aws-cli
            :alt: Gitter
@@ -28,6 +28,7 @@ Description: =======
         * 3.3.x and greater
         * 3.4.x and greater
         * 3.5.x and greater
+        * 3.6.x and greater
         
         .. attention::
            We recommend that all customers regularly monitor the
@@ -193,25 +194,27 @@ Description: =======
         configured either with environment variables, configuration file
         entries or both.  The following table documents these.
         
-        =========== =========== ===================== ===================== ============================
-        Variable    Option      Config Entry          Environment Variable  Description
-        =========== =========== ===================== ===================== ============================
-        profile     --profile   profile               AWS_DEFAULT_PROFILE   Default profile name
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        region      --region    region                AWS_DEFAULT_REGION    Default AWS Region
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        config_file                                   AWS_CONFIG_FILE       Alternate location of config
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        output      --output    output                AWS_DEFAULT_OUTPUT    Default output style
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        ca_bundle   --ca-bundle ca_bundle             AWS_CA_BUNDLE         CA Certificate Bundle
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        access_key              aws_access_key_id     AWS_ACCESS_KEY_ID     AWS Access Key
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        secret_key              aws_secret_access_key AWS_SECRET_ACCESS_KEY AWS Secret Key
-        ----------- ----------- --------------------- --------------------- ----------------------------
-        token                   aws_session_token     AWS_SESSION_TOKEN     AWS Token (temp credentials)
-        =========== =========== ===================== ===================== ============================
+        ==================== =========== ===================== ===================== ============================
+        Variable             Option      Config Entry          Environment Variable  Description
+        ==================== =========== ===================== ===================== ============================
+        profile              --profile   profile               AWS_DEFAULT_PROFILE   Default profile name
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        region               --region    region                AWS_DEFAULT_REGION    Default AWS Region
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        config_file                                            AWS_CONFIG_FILE       Alternate location of config
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        output               --output    output                AWS_DEFAULT_OUTPUT    Default output style
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        ca_bundle            --ca-bundle ca_bundle             AWS_CA_BUNDLE         CA Certificate Bundle
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        access_key                       aws_access_key_id     AWS_ACCESS_KEY_ID     AWS Access Key
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        secret_key                       aws_secret_access_key AWS_SECRET_ACCESS_KEY AWS Secret Key
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        token                            aws_session_token     AWS_SESSION_TOKEN     AWS Token (temp credentials)
+        -------------------- ----------- --------------------- --------------------- ----------------------------
+        cli_timestamp_format             cli_timestamp_format                        Ouput format of timestamps
+        ==================== =========== ===================== ===================== ============================
         
         ^^^^^^^^
         Examples
@@ -429,3 +432,4 @@ Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3.3
 Classifier: Programming Language :: Python :: 3.4
 Classifier: Programming Language :: Python :: 3.5
+Classifier: Programming Language :: Python :: 3.6
