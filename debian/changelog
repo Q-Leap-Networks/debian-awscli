@@ -2,6 +2,8 @@ awscli (1.11.44-1) UNRELEASED; urgency=medium
 
   * New upstream version 1.11.44
   * debian/rules: Rename a bash completion file. (Closes: #823398)
+  * debian/control: add version info to depending packages. 
+    (Closes: #850867, #851685)
 
  -- TANIGUCHI Takaki <takaki@debian.org>  Thu, 02 Feb 2017 17:55:28 +0900
 
