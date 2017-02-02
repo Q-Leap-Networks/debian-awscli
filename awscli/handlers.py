@@ -24,6 +24,7 @@ from awscli.customizations.argrename import register_arg_renames
 from awscli.customizations.assumerole import register_assume_role_provider
 from awscli.customizations.awslambda import register_lambda_create_function
 from awscli.customizations.cliinputjson import register_cli_input_json
+from awscli.customizations.cloudformation import initialize as cloudformation_init
 from awscli.customizations.cloudfront import register as register_cloudfront
 from awscli.customizations.cloudsearch import initialize as cloudsearch_init
 from awscli.customizations.cloudsearchdomain import register_cloudsearchdomain
@@ -71,6 +72,7 @@ from awscli.customizations.sessendemail import register_ses_send_email
 from awscli.customizations.streamingoutputarg import add_streaming_output_arg
 from awscli.customizations.toplevelbool import register_bool_params
 from awscli.customizations.waiters import register_add_waiters
+from awscli.customizations.opsworkscm import register_alias_opsworks_cm
 
 
 def awscli_initialize(event_handlers):
@@ -144,3 +146,5 @@ def awscli_initialize(event_handlers):
     register_cloudfront(event_handlers)
     register_gamelift_commands(event_handlers)
     register_ec2_page_size_injector(event_handlers)
+    cloudformation_init(event_handlers)
+    register_alias_opsworks_cm(event_handlers)
