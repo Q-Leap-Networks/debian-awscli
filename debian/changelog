@@ -1,3 +1,9 @@
+awscli (1.11.44-2) unstable; urgency=medium
+
+  * debian/*.1: Add manpages fow aws, aws_completer. (Closes: #861758)
+
+ -- Roland Fehrenbacher <rf@q-leap.de>  Wed, 03 May 2017 15:26:11 +0200
+
 awscli (1.11.44-1) unstable; urgency=medium
 
   * New upstream version 1.11.44
